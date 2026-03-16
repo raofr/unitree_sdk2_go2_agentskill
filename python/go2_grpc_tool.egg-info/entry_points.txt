@@ -1,0 +1,2 @@
+[console_scripts]
+go2-grpc = go2_grpc_tool.cli:main

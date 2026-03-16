@@ -3,6 +3,7 @@ project(unitree_sdk2 VERSION 2.0.0)
 
 ## Project Options
 option(BUILD_EXAMPLES "Build examples" ON)
+option(BUILD_GO2_GRPC "Build GO2 gRPC server" OFF)
 
 ## Set compiler to use c++ 17 features
 set(CMAKE_CXX_STANDARD 17)
@@ -48,6 +49,52 @@ message(STATUS "Importing: ${UNITREE_SDK_LIB}")
 
 find_package(Threads REQUIRED)
 
+if (BUILD_GO2_GRPC)
+    set(GO2_GRPC_USING_CONFIG OFF)
+
+    find_package(Protobuf CONFIG QUIET)
+    find_package(gRPC CONFIG QUIET)
+
+    if (TARGET protobuf::libprotobuf AND TARGET gRPC::grpc++)
+        set(GO2_GRPC_USING_CONFIG ON)
+        set(GO2_GRPCPP_LINK_TARGET gRPC::grpc++)
+        set(GO2_GRPC_LINK_TARGET gRPC::grpc)
+    else ()
+        find_package(Protobuf REQUIRED)
+        find_package(PkgConfig REQUIRED)
+        pkg_check_modules(GRPCPP REQUIRED IMPORTED_TARGET grpc++)
+        pkg_check_modules(GRPC_C REQUIRED IMPORTED_TARGET grpc)
+
+        set(GO2_GRPCPP_LINK_TARGET PkgConfig::GRPCPP)
+        set(GO2_GRPC_LINK_TARGET PkgConfig::GRPC_C)
+    endif ()
+
+    if (TARGET protobuf::libprotobuf)
+        set(GO2_PROTOBUF_LINK_TARGET protobuf::libprotobuf)
+    elseif (DEFINED Protobuf_LIBRARIES)
+        set(GO2_PROTOBUF_LINK_TARGET ${Protobuf_LIBRARIES})
+    elseif (DEFINED PROTOBUF_LIBRARIES)
+        set(GO2_PROTOBUF_LINK_TARGET ${PROTOBUF_LIBRARIES})
+    else ()
+        message(FATAL_ERROR "Unable to locate protobuf link libraries")
+    endif ()
+
+    if (NOT Protobuf_PROTOC_EXECUTABLE)
+        if (DEFINED PROTOBUF_PROTOC_EXECUTABLE)
+            set(Protobuf_PROTOC_EXECUTABLE ${PROTOBUF_PROTOC_EXECUTABLE})
+        endif ()
+    endif ()
+
+    find_program(GRPC_CPP_PLUGIN_EXECUTABLE grpc_cpp_plugin)
+    if (NOT GRPC_CPP_PLUGIN_EXECUTABLE)
+        message(FATAL_ERROR "grpc_cpp_plugin is required when BUILD_GO2_GRPC=ON")
+    endif ()
+
+    set(GO2_PROTOBUF_LINK_TARGET "${GO2_PROTOBUF_LINK_TARGET}" CACHE INTERNAL "go2 grpc protobuf link target")
+    set(GO2_GRPCPP_LINK_TARGET "${GO2_GRPCPP_LINK_TARGET}" CACHE INTERNAL "go2 grpc++ link target")
+    set(GO2_GRPC_LINK_TARGET "${GO2_GRPC_LINK_TARGET}" CACHE INTERNAL "go2 grpc core link target")
+endif ()
+
 add_library(unitree_sdk2 STATIC IMPORTED GLOBAL)
 set_target_properties(unitree_sdk2 PROPERTIES
         IMPORTED_LOCATION ${UNITREE_SDK_LIB})
@@ -58,6 +105,10 @@ target_include_directories(unitree_sdk2 INTERFACE
 
 if (BUILD_EXAMPLES)
     add_subdirectory(example)
+endif ()
+
+if (BUILD_GO2_GRPC)
+    add_subdirectory(src/go2_grpc)
 endif ()
 
 ## Install the library

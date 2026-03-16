@@ -1,0 +1,140 @@
+syntax = "proto3";
+
+package go2.sport.v1;
+
+service Go2SportService {
+  rpc OpenSession(OpenSessionRequest) returns (OpenSessionResponse);
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+  rpc CloseSession(CloseSessionRequest) returns (CloseSessionResponse);
+  rpc ForceCloseOwnerSessions(ForceCloseOwnerSessionsRequest) returns (ForceCloseOwnerSessionsResponse);
+
+  rpc ExecuteAction(ExecuteActionRequest) returns (ExecuteActionResponse);
+  rpc GetServerStatus(GetServerStatusRequest) returns (GetServerStatusResponse);
+}
+
+message OpenSessionRequest {
+  string owner = 1;
+  string session_name = 2;
+  uint32 ttl_sec = 3;
+  bool parallel = 4;
+}
+
+message OpenSessionResponse {
+  int32 code = 1;
+  string message = 2;
+  string session_id = 3;
+  uint64 expires_at_ms = 4;
+}
+
+message HeartbeatRequest {
+  string session_id = 1;
+}
+
+message HeartbeatResponse {
+  int32 code = 1;
+  string message = 2;
+  uint64 expires_at_ms = 3;
+}
+
+message CloseSessionRequest {
+  string session_id = 1;
+}
+
+message CloseSessionResponse {
+  int32 code = 1;
+  string message = 2;
+}
+
+message ForceCloseOwnerSessionsRequest {
+  string owner = 1;
+  bool keep_parallel_sessions = 2;
+}
+
+message ForceCloseOwnerSessionsResponse {
+  int32 code = 1;
+  string message = 2;
+  uint32 closed_count = 3;
+}
+
+enum Action {
+  ACTION_UNSPECIFIED = 0;
+  ACTION_DAMP = 1;
+  ACTION_BALANCE_STAND = 2;
+  ACTION_STOP_MOVE = 3;
+  ACTION_STAND_UP = 4;
+  ACTION_STAND_DOWN = 5;
+  ACTION_RECOVERY_STAND = 6;
+  ACTION_EULER = 7;
+  ACTION_MOVE = 8;
+  ACTION_SIT = 9;
+  ACTION_RISE_SIT = 10;
+  ACTION_SPEED_LEVEL = 11;
+  ACTION_HELLO = 12;
+  ACTION_STRETCH = 13;
+  ACTION_SWITCH_JOYSTICK = 14;
+  ACTION_CONTENT = 15;
+  ACTION_HEART = 16;
+  ACTION_POSE = 17;
+  ACTION_SCRAPE = 18;
+  ACTION_FRONT_FLIP = 19;
+  ACTION_FRONT_JUMP = 20;
+  ACTION_FRONT_POUNCE = 21;
+  ACTION_DANCE1 = 22;
+  ACTION_DANCE2 = 23;
+  ACTION_LEFT_FLIP = 24;
+  ACTION_BACK_FLIP = 25;
+  ACTION_HAND_STAND = 26;
+  ACTION_FREE_WALK = 27;
+  ACTION_FREE_BOUND = 28;
+  ACTION_FREE_JUMP = 29;
+  ACTION_FREE_AVOID = 30;
+  ACTION_CLASSIC_WALK = 31;
+  ACTION_WALK_UPRIGHT = 32;
+  ACTION_CROSS_STEP = 33;
+  ACTION_AUTO_RECOVER_SET = 34;
+  ACTION_AUTO_RECOVER_GET = 35;
+  ACTION_STATIC_WALK = 36;
+  ACTION_TROT_RUN = 37;
+  ACTION_ECONOMIC_GAIT = 38;
+  ACTION_SWITCH_AVOID_MODE = 39;
+}
+
+message ExecuteActionRequest {
+  string session_id = 1;
+  Action action = 2;
+
+  float vx = 3;
+  float vy = 4;
+  float vyaw = 5;
+
+  float roll = 6;
+  float pitch = 7;
+  float yaw = 8;
+
+  int32 level = 9;
+  bool flag = 10;
+}
+
+message ExecuteActionResponse {
+  int32 code = 1;
+  string message = 2;
+  int32 sdk_code = 3;
+  bool bool_value = 4;
+}
+
+message GetServerStatusRequest {}
+
+message SessionStatus {
+  string session_id = 1;
+  string owner = 2;
+  string session_name = 3;
+  bool parallel = 4;
+  uint64 expires_at_ms = 5;
+}
+
+message GetServerStatusResponse {
+  int32 code = 1;
+  string message = 2;
+  uint32 active_sessions = 3;
+  repeated SessionStatus sessions = 4;
+}

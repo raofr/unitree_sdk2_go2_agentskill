@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "go2-grpc-tool"
+version = "0.1.0"
+description = "Python CLI and SDK for GO2 gRPC sport service"
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+  "grpcio>=1.62.0",
+  "protobuf>=4.25.0"
+]
+
+[project.scripts]
+go2-grpc = "go2_grpc_tool.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["go2_grpc_tool*"]

@@ -3,6 +3,12 @@
 
 # cpp
 build
+build-*
 
 #cland
 .cache
+
+*.pyc
+
+
+thirdparty/grpc_cross

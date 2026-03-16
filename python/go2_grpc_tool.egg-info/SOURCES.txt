@@ -1,0 +1,12 @@
+README.md
+pyproject.toml
+go2_grpc_tool/__init__.py
+go2_grpc_tool/cli.py
+go2_grpc_tool/client.py
+go2_grpc_tool.egg-info/PKG-INFO
+go2_grpc_tool.egg-info/SOURCES.txt
+go2_grpc_tool.egg-info/dependency_links.txt
+go2_grpc_tool.egg-info/entry_points.txt
+go2_grpc_tool.egg-info/requires.txt
+go2_grpc_tool.egg-info/top_level.txt
+go2_grpc_tool/generated/__init__.py
