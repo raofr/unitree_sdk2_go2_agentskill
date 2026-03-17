@@ -8,16 +8,59 @@ This file records the current compile/start/stop/status workflow.
 - Source dir: /home/unitree/workspace/unitree_sdk2
 - Service endpoint (wifi): 192.168.51.213:50051
 
+## External Wi-Fi Adapter Requirement
+
+To expose service on `192.168.51.213:50051`, dock host must have an external USB Wi-Fi NIC active.
+
+- `192.168.123.18`: usually build/control path (wired)
+- `192.168.51.213`: usually service path (external Wi-Fi)
+
+Quick check:
+
+```bash
+ssh unitree@192.168.51.213 "ip -o -4 addr show | grep 192.168.51. || true"
+```
+
+If empty output, connect/enable USB Wi-Fi adapter first.
+
 ## 1. Compile
 
 ```bash
 ssh unitree@192.168.123.18 "cd /home/unitree/workspace/unitree_sdk2 && cmake -S . -B build-go2-grpc -DBUILD_EXAMPLES=OFF -DBUILD_GO2_GRPC=ON -DCMAKE_BUILD_TYPE=Release && cmake --build build-go2-grpc -j4 --target go2_sport_grpc_server"
 ```
 
+## 1.1 Pull prebuilt binary from build host
+
+```bash
+mkdir -p artifacts/go2_grpc
+scp unitree@192.168.123.18:/home/unitree/workspace/unitree_sdk2/build-go2-grpc/bin/go2_sport_grpc_server \
+	artifacts/go2_grpc/go2_sport_grpc_server.aarch64
+file artifacts/go2_grpc/go2_sport_grpc_server.aarch64
+```
+
+Expected architecture: `ARM aarch64`.
+
+## 1.2 Deploy prebuilt binary to service host (no recompile)
+
+```bash
+ssh unitree@192.168.51.213 "mkdir -p /home/unitree/openclaw/go2_grpc/bin"
+scp artifacts/go2_grpc/go2_sport_grpc_server.aarch64 \
+	unitree@192.168.51.213:/home/unitree/openclaw/go2_grpc/bin/go2_sport_grpc_server
+ssh unitree@192.168.51.213 "chmod +x /home/unitree/openclaw/go2_grpc/bin/go2_sport_grpc_server"
+```
+
 ## 2. Start
 
 ```bash
 ssh unitree@192.168.123.18 "cd /home/unitree/workspace/unitree_sdk2 && nohup ./build-go2-grpc/bin/go2_sport_grpc_server eth0 0.0.0.0 50051 > build-go2-grpc/go2_grpc_server.log 2>&1 &"
+```
+
+If using deployed binary on `192.168.51.213`, start with detected Wi-Fi interface:
+
+```bash
+ssh unitree@192.168.51.213 "IFACE=\$(ip -o -4 addr show | awk '/192\\.168\\.51\\./ {print \$2; exit}'); \
+	test -n \"\$IFACE\" && nohup /home/unitree/openclaw/go2_grpc/bin/go2_sport_grpc_server \"\$IFACE\" 0.0.0.0 50051 \
+	> /home/unitree/openclaw/go2_grpc/go2_grpc_server.log 2>&1 &"
 ```
 
 ## 3. Stop
