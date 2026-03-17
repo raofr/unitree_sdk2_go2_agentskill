@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Optional
+from typing import Iterator
 
 import grpc
 
@@ -58,12 +58,66 @@ class SessionInfo:
     expires_at_ms: int
 
 
+@dataclass
+class DetectionConfig:
+    model_path: str = ""
+    conf_thres: float = 0.25
+    iou_thres: float = 0.45
+    max_det: int = 100
+
+
+@dataclass
+class AudioUploadConfig:
+    mime: str = "audio/opus"
+    sample_rate: int = 48000
+    channels: int = 1
+    volume: float = 1.0
+    loop: bool = False
+    request_id: str = ""
+
+
 class Go2SportClient:
     def __init__(self, endpoint: str = "127.0.0.1:50051", timeout_sec: float = 5.0):
         self._endpoint = endpoint
         self._timeout = timeout_sec
         self._channel = grpc.insecure_channel(endpoint)
         self._stub = go2_sport_pb2_grpc.Go2SportServiceStub(self._channel)
+
+        self._detect_once_rpc = self._channel.unary_unary(
+            "/go2.sport.v1.Go2SportService/DetectObjects",
+            request_serializer=go2_sport_pb2.DetectObjectsRequest.SerializeToString,
+            response_deserializer=go2_sport_pb2.DetectObjectsResponse.FromString,
+        )
+        self._start_detection_rpc = self._channel.unary_unary(
+            "/go2.sport.v1.Go2SportService/StartDetection",
+            request_serializer=go2_sport_pb2.StartDetectionRequest.SerializeToString,
+            response_deserializer=go2_sport_pb2.StartDetectionResponse.FromString,
+        )
+        self._stop_detection_rpc = self._channel.unary_unary(
+            "/go2.sport.v1.Go2SportService/StopDetection",
+            request_serializer=go2_sport_pb2.StopDetectionRequest.SerializeToString,
+            response_deserializer=go2_sport_pb2.StopDetectionResponse.FromString,
+        )
+        self._subscribe_detections_rpc = self._channel.unary_stream(
+            "/go2.sport.v1.Go2SportService/SubscribeDetections",
+            request_serializer=go2_sport_pb2.SubscribeDetectionsRequest.SerializeToString,
+            response_deserializer=go2_sport_pb2.DetectionEvent.FromString,
+        )
+        self._upload_and_play_audio_rpc = self._channel.unary_unary(
+            "/go2.sport.v1.Go2SportService/UploadAndPlayAudio",
+            request_serializer=go2_sport_pb2.UploadAndPlayAudioRequest.SerializeToString,
+            response_deserializer=go2_sport_pb2.UploadAndPlayAudioResponse.FromString,
+        )
+        self._get_audio_status_rpc = self._channel.unary_unary(
+            "/go2.sport.v1.Go2SportService/GetAudioStatus",
+            request_serializer=go2_sport_pb2.GetAudioStatusRequest.SerializeToString,
+            response_deserializer=go2_sport_pb2.GetAudioStatusResponse.FromString,
+        )
+        self._stop_audio_playback_rpc = self._channel.unary_unary(
+            "/go2.sport.v1.Go2SportService/StopAudioPlayback",
+            request_serializer=go2_sport_pb2.StopAudioPlaybackRequest.SerializeToString,
+            response_deserializer=go2_sport_pb2.StopAudioPlaybackResponse.FromString,
+        )
 
     def open_session(
         self,
@@ -143,6 +197,91 @@ class Go2SportClient:
             go2_sport_pb2.GetServerStatusRequest(),
             timeout=self._timeout,
         )
+        self._ensure_ok(resp.code, resp.message)
+        return resp
+
+    def detect_once(
+        self,
+        *,
+        session_id: str,
+        config: DetectionConfig,
+    ) -> go2_sport_pb2.DetectObjectsResponse:
+        req = go2_sport_pb2.DetectObjectsRequest(
+            session_id=session_id,
+            model_path=config.model_path,
+            conf_thres=float(config.conf_thres),
+            iou_thres=float(config.iou_thres),
+            max_det=int(config.max_det),
+        )
+        resp = self._detect_once_rpc(req, timeout=self._timeout)
+        self._ensure_ok(resp.code, resp.message)
+        return resp
+
+    def start_detection(
+        self,
+        *,
+        session_id: str,
+        stream_id: str,
+        frame_skip: int,
+        fps_limit: int,
+        config: DetectionConfig,
+    ) -> go2_sport_pb2.StartDetectionResponse:
+        req = go2_sport_pb2.StartDetectionRequest(
+            session_id=session_id,
+            stream_id=stream_id,
+            model_path=config.model_path,
+            conf_thres=float(config.conf_thres),
+            iou_thres=float(config.iou_thres),
+            max_det=int(config.max_det),
+            frame_skip=int(frame_skip),
+            fps_limit=int(fps_limit),
+        )
+        resp = self._start_detection_rpc(req, timeout=self._timeout)
+        self._ensure_ok(resp.code, resp.message)
+        return resp
+
+    def stop_detection(self, *, session_id: str, stream_id: str) -> go2_sport_pb2.StopDetectionResponse:
+        req = go2_sport_pb2.StopDetectionRequest(session_id=session_id, stream_id=stream_id)
+        resp = self._stop_detection_rpc(req, timeout=self._timeout)
+        self._ensure_ok(resp.code, resp.message)
+        return resp
+
+    def subscribe_detections(self, *, session_id: str, stream_id: str) -> Iterator[go2_sport_pb2.DetectionEvent]:
+        req = go2_sport_pb2.SubscribeDetectionsRequest(session_id=session_id, stream_id=stream_id)
+        return self._subscribe_detections_rpc(req, timeout=self._timeout)
+
+    def upload_and_play_audio(
+        self,
+        *,
+        session_id: str,
+        stream_id: str,
+        audio_bytes: bytes,
+        config: AudioUploadConfig,
+    ) -> go2_sport_pb2.UploadAndPlayAudioResponse:
+        req = go2_sport_pb2.UploadAndPlayAudioRequest(
+            session_id=session_id,
+            stream_id=stream_id,
+            audio_bytes=audio_bytes,
+            mime=config.mime,
+            sample_rate=int(config.sample_rate),
+            channels=int(config.channels),
+            volume=float(config.volume),
+            loop=bool(config.loop),
+            request_id=config.request_id,
+        )
+        resp = self._upload_and_play_audio_rpc(req, timeout=self._timeout)
+        self._ensure_ok(resp.code, resp.message)
+        return resp
+
+    def get_audio_status(self, *, session_id: str) -> go2_sport_pb2.GetAudioStatusResponse:
+        req = go2_sport_pb2.GetAudioStatusRequest(session_id=session_id)
+        resp = self._get_audio_status_rpc(req, timeout=self._timeout)
+        self._ensure_ok(resp.code, resp.message)
+        return resp
+
+    def stop_audio_playback(self, *, session_id: str, stream_id: str = "") -> go2_sport_pb2.StopAudioPlaybackResponse:
+        req = go2_sport_pb2.StopAudioPlaybackRequest(session_id=session_id, stream_id=stream_id)
+        resp = self._stop_audio_playback_rpc(req, timeout=self._timeout)
         self._ensure_ok(resp.code, resp.message)
         return resp
 

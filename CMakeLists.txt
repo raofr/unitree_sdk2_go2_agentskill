@@ -23,6 +23,7 @@ endif ()
 
 ## Use GNUInstallDirs to install libraries into correct locations on all platforms.
 include(GNUInstallDirs)
+include(CTest)
 
 ## Put all binary files into /bin and libraries into /lib
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/${CMAKE_INSTALL_LIBDIR})

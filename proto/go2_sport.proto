@@ -10,6 +10,13 @@ service Go2SportService {
 
   rpc ExecuteAction(ExecuteActionRequest) returns (ExecuteActionResponse);
   rpc GetServerStatus(GetServerStatusRequest) returns (GetServerStatusResponse);
+  rpc DetectObjects(DetectObjectsRequest) returns (DetectObjectsResponse);
+  rpc StartDetection(StartDetectionRequest) returns (StartDetectionResponse);
+  rpc StopDetection(StopDetectionRequest) returns (StopDetectionResponse);
+  rpc SubscribeDetections(SubscribeDetectionsRequest) returns (stream DetectionEvent);
+  rpc UploadAndPlayAudio(UploadAndPlayAudioRequest) returns (UploadAndPlayAudioResponse);
+  rpc GetAudioStatus(GetAudioStatusRequest) returns (GetAudioStatusResponse);
+  rpc StopAudioPlayback(StopAudioPlaybackRequest) returns (StopAudioPlaybackResponse);
 }
 
 message OpenSessionRequest {
@@ -137,4 +144,122 @@ message GetServerStatusResponse {
   string message = 2;
   uint32 active_sessions = 3;
   repeated SessionStatus sessions = 4;
+}
+
+message BoundingBox {
+  float x = 1;
+  float y = 2;
+  float w = 3;
+  float h = 4;
+}
+
+message Detection {
+  int32 class_id = 1;
+  string label = 2;
+  float score = 3;
+  BoundingBox bbox = 4;
+}
+
+message DetectObjectsRequest {
+  string session_id = 1;
+  string model_path = 2;
+  float conf_thres = 3;
+  float iou_thres = 4;
+  uint32 max_det = 5;
+}
+
+message DetectObjectsResponse {
+  int32 code = 1;
+  string message = 2;
+  uint64 frame_id = 3;
+  uint64 timestamp_ms = 4;
+  repeated Detection detections = 5;
+}
+
+message StartDetectionRequest {
+  string session_id = 1;
+  string stream_id = 2;
+  string model_path = 3;
+  float conf_thres = 4;
+  float iou_thres = 5;
+  uint32 max_det = 6;
+  uint32 frame_skip = 7;
+  uint32 fps_limit = 8;
+}
+
+message StartDetectionResponse {
+  int32 code = 1;
+  string message = 2;
+  string stream_id = 3;
+}
+
+message StopDetectionRequest {
+  string session_id = 1;
+  string stream_id = 2;
+}
+
+message StopDetectionResponse {
+  int32 code = 1;
+  string message = 2;
+  bool stopped = 3;
+}
+
+message SubscribeDetectionsRequest {
+  string session_id = 1;
+  string stream_id = 2;
+}
+
+message DetectionEvent {
+  int32 code = 1;
+  string message = 2;
+  string stream_id = 3;
+  uint64 frame_id = 4;
+  uint64 timestamp_ms = 5;
+  repeated Detection detections = 6;
+}
+
+message UploadAndPlayAudioRequest {
+  string session_id = 1;
+  string stream_id = 2;
+  bytes audio_bytes = 3;
+  string mime = 4;
+  uint32 sample_rate = 5;
+  uint32 channels = 6;
+  float volume = 7;
+  bool loop = 8;
+  string request_id = 9;
+}
+
+message UploadAndPlayAudioResponse {
+  int32 code = 1;
+  string message = 2;
+  string stream_id = 3;
+  string request_id = 4;
+  bool accepted = 5;
+}
+
+message GetAudioStatusRequest {
+  string session_id = 1;
+}
+
+message GetAudioStatusResponse {
+  int32 code = 1;
+  string message = 2;
+  bool connected = 3;
+  bool playing = 4;
+  string stream_id = 5;
+  uint32 queued_items = 6;
+  uint64 last_error_ts_ms = 7;
+  string last_error = 8;
+}
+
+message StopAudioPlaybackRequest {
+  string session_id = 1;
+  string stream_id = 2;
+}
+
+message StopAudioPlaybackResponse {
+  int32 code = 1;
+  string message = 2;
+  bool stopped = 3;
 }

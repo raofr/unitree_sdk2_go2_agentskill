@@ -64,6 +64,20 @@ Close session:
 PYTHONPATH=python python3 -m go2_grpc_tool.cli --endpoint 192.168.51.213:50051 close-session --session-id <id>
 ```
 
+Detection once:
+
+```bash
+PYTHONPATH=python python3 -m go2_grpc_tool.cli --endpoint 192.168.51.213:50051 detect-once --session-id <id> --model-path /home/unitree/openclaw/go2_grpc/models/yolo26.engine
+```
+
+Start/subscribe/stop detection:
+
+```bash
+PYTHONPATH=python python3 -m go2_grpc_tool.cli --endpoint 192.168.51.213:50051 detect-start --session-id <id> --stream-id yolo-main --model-path /home/unitree/openclaw/go2_grpc/models/yolo26.engine --frame-skip 1 --fps-limit 10
+PYTHONPATH=python python3 -m go2_grpc_tool.cli --endpoint 192.168.51.213:50051 detect-subscribe --session-id <id> --stream-id yolo-main
+PYTHONPATH=python python3 -m go2_grpc_tool.cli --endpoint 192.168.51.213:50051 detect-stop --session-id <id> --stream-id yolo-main
+```
+
 ## Binary Deployment (Prebuilt)
 
 Pull from build host (`192.168.123.18`):

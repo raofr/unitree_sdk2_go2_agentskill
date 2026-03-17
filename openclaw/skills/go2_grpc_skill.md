@@ -53,6 +53,20 @@ Quick check on dock host:
 - Bool flag action:
   python3 -m go2_grpc_tool.cli --endpoint 192.168.51.213:50051 action --session-id <id> --action ACTION_HAND_STAND --flag
 
+## YOLO26 Detection Commands
+
+- Detect once:
+  PYTHONPATH=python python3 -m go2_grpc_tool.cli --endpoint 192.168.51.213:50051 detect-once --session-id <id> --model-path /home/unitree/openclaw/go2_grpc/models/yolo26.engine --conf-thres 0.25 --iou-thres 0.45 --max-det 100
+
+- Start continuous detection:
+  PYTHONPATH=python python3 -m go2_grpc_tool.cli --endpoint 192.168.51.213:50051 detect-start --session-id <id> --stream-id yolo-main --model-path /home/unitree/openclaw/go2_grpc/models/yolo26.engine --frame-skip 1 --fps-limit 10
+
+- Subscribe callback stream:
+  PYTHONPATH=python python3 -m go2_grpc_tool.cli --endpoint 192.168.51.213:50051 detect-subscribe --session-id <id> --stream-id yolo-main
+
+- Stop continuous detection:
+  PYTHONPATH=python python3 -m go2_grpc_tool.cli --endpoint 192.168.51.213:50051 detect-stop --session-id <id> --stream-id yolo-main
+
 ## Deployment Lifecycle Commands
 
 Current stable native build host is `unitree@192.168.123.18`.

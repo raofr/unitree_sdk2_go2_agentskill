@@ -10,6 +10,9 @@ LOG_FILE="${RUN_DIR}/go2_sport_grpc_server.log"
 : "${GO2_INTERFACE:=eth0}"
 : "${GO2_GRPC_LISTEN:=0.0.0.0}"
 : "${GO2_GRPC_PORT:=50051}"
+: "${GO2_ENABLE_LEASE:=0}"
+: "${GO2_MODEL_PATH:=}"
+: "${GO2_HOST_IP:=192.168.123.161}"
 
 mkdir -p "${RUN_DIR}"
 
@@ -26,7 +29,7 @@ case "${1:-}" in
       echo "already running pid=$(cat "${PID_FILE}")"
       exit 0
     fi
-    nohup "${BIN}" "${GO2_INTERFACE}" "${GO2_GRPC_LISTEN}" "${GO2_GRPC_PORT}" >"${LOG_FILE}" 2>&1 &
+    nohup "${BIN}" "${GO2_INTERFACE}" "${GO2_GRPC_LISTEN}" "${GO2_GRPC_PORT}" "${GO2_ENABLE_LEASE}" "${GO2_MODEL_PATH}" "${GO2_HOST_IP}" >"${LOG_FILE}" 2>&1 &
     echo $! > "${PID_FILE}"
     echo "started pid=$(cat "${PID_FILE}")"
     ;;

@@ -1,0 +1,19 @@
+[Unit]
+Description=GO2 Sport gRPC Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=unitree
+Group=unitree
+WorkingDirectory=/home/unitree/openclaw/go2_grpc
+EnvironmentFile=/home/unitree/openclaw/go2_grpc/run/go2_sport_grpc.env
+ExecStart=/home/unitree/openclaw/go2_grpc/bin/go2_sport_grpc_server ${GO2_INTERFACE} ${GO2_GRPC_LISTEN} ${GO2_GRPC_PORT} ${GO2_ENABLE_LEASE} ${GO2_MODEL_PATH} ${GO2_HOST_IP}
+Restart=always
+RestartSec=2
+StandardOutput=append:/home/unitree/openclaw/go2_grpc/run/go2_sport_grpc_server.log
+StandardError=append:/home/unitree/openclaw/go2_grpc/run/go2_sport_grpc_server.log
+
+[Install]
+WantedBy=multi-user.target

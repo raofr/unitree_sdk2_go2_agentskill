@@ -1,14 +1,40 @@
 # IDE
-.vscode
+.vscode/
+.idea/
 
 # cpp
-build
-build-*
+build/
+build-*/
+cmake-build-*/
+artifacts/
 
 #cland
-.cache
+.cache/
 
 *.pyc
+__pycache__/
+.pytest_cache/
+
+# python envs
+.venv/
+.venv-*/
+
+# local grpc toolchain/worktrees
+thirdparty/grpc_local/
+thirdparty/grpc_cross/
+
+# YOLO/TensorRT generated artifacts
+models/
+models/**/*.engine
+models/**/*.onnx
+
+# runtime/debug outputs
+test/cat.jpg
+test/detect_debug_dump/
+test/go2_camera_latest.jpg
+*.Zone.Identifier
+*:Zone.Identifier
+*.log
+*.pid
 
 
-thirdparty/grpc_cross
