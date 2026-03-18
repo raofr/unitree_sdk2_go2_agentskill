@@ -22,6 +22,7 @@ __pycache__/
 # local grpc toolchain/worktrees
 thirdparty/grpc_local/
 thirdparty/grpc_cross/
+thirdparty/grpc_cross
 
 # YOLO/TensorRT generated artifacts
 models/
@@ -36,5 +37,6 @@ test/go2_camera_latest.jpg
 *:Zone.Identifier
 *.log
 *.pid
+.DS_Store
 
 
