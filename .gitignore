@@ -12,3 +12,4 @@ build-*
 
 
 thirdparty/grpc_cross
+.DS_Store

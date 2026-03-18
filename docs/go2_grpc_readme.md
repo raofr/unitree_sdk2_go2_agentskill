@@ -75,6 +75,70 @@ ssh unitree@192.168.123.18 "pkill -x go2_sport_grpc_server || true"
 ssh unitree@192.168.123.18 "pgrep -ax go2_sport_grpc_server; ss -ltn | grep 50051 || true"
 ```
 
+## 4.1 systemd service management (start/stop/autostart)
+
+Service name on host `192.168.123.18`: `go2_sport_grpc.service`
+
+Check service status:
+
+```bash
+ssh unitree@192.168.123.18 "systemctl status go2_sport_grpc.service --no-pager"
+```
+
+Start service now:
+
+```bash
+ssh unitree@192.168.123.18 "sudo systemctl start go2_sport_grpc.service"
+```
+
+Stop service now:
+
+```bash
+ssh unitree@192.168.123.18 "sudo systemctl stop go2_sport_grpc.service"
+```
+
+Restart service:
+
+```bash
+ssh unitree@192.168.123.18 "sudo systemctl restart go2_sport_grpc.service"
+```
+
+Enable autostart at boot (开始自动启动):
+
+```bash
+ssh unitree@192.168.123.18 "sudo systemctl enable go2_sport_grpc.service"
+```
+
+Disable autostart at boot (停止自动启动):
+
+```bash
+ssh unitree@192.168.123.18 "sudo systemctl disable go2_sport_grpc.service"
+```
+
+Enable and start immediately (常用):
+
+```bash
+ssh unitree@192.168.123.18 "sudo systemctl enable --now go2_sport_grpc.service"
+```
+
+Disable and stop immediately:
+
+```bash
+ssh unitree@192.168.123.18 "sudo systemctl disable --now go2_sport_grpc.service"
+```
+
+Check autostart and runtime state:
+
+```bash
+ssh unitree@192.168.123.18 "systemctl is-enabled go2_sport_grpc.service; systemctl is-active go2_sport_grpc.service"
+```
+
+View recent service logs:
+
+```bash
+ssh unitree@192.168.123.18 "journalctl -u go2_sport_grpc.service -n 80 --no-pager"
+```
+
 ## 5. Local PC Python smoke test (StandUp/StandDown only)
 
 Generate stubs first if needed:
