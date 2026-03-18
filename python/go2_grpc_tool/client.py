@@ -118,6 +118,21 @@ class Go2SportClient:
             request_serializer=go2_sport_pb2.StopAudioPlaybackRequest.SerializeToString,
             response_deserializer=go2_sport_pb2.StopAudioPlaybackResponse.FromString,
         )
+        self._start_microphone_rpc = self._channel.unary_unary(
+            "/go2.sport.v1.Go2SportService/StartMicrophone",
+            request_serializer=go2_sport_pb2.StartMicrophoneRequest.SerializeToString,
+            response_deserializer=go2_sport_pb2.StartMicrophoneResponse.FromString,
+        )
+        self._stop_microphone_rpc = self._channel.unary_unary(
+            "/go2.sport.v1.Go2SportService/StopMicrophone",
+            request_serializer=go2_sport_pb2.StopMicrophoneRequest.SerializeToString,
+            response_deserializer=go2_sport_pb2.StopMicrophoneResponse.FromString,
+        )
+        self._subscribe_microphone_rpc = self._channel.stream_stream(
+            "/go2.sport.v1.Go2SportService/SubscribeMicrophone",
+            request_serializer=go2_sport_pb2.MicrophoneControl.SerializeToString,
+            response_deserializer=go2_sport_pb2.MicrophoneAudio.FromString,
+        )
 
     def open_session(
         self,
@@ -284,6 +299,39 @@ class Go2SportClient:
         resp = self._stop_audio_playback_rpc(req, timeout=self._timeout)
         self._ensure_ok(resp.code, resp.message)
         return resp
+
+    def start_microphone(
+        self,
+        *,
+        session_id: str,
+        stream_id: str = "",
+        sample_rate: int = 48000,
+        channels: int = 1,
+    ) -> go2_sport_pb2.StartMicrophoneResponse:
+        req = go2_sport_pb2.StartMicrophoneRequest(
+            session_id=session_id,
+            stream_id=stream_id,
+            sample_rate=sample_rate,
+            channels=channels,
+        )
+        resp = self._start_microphone_rpc(req, timeout=self._timeout)
+        self._ensure_ok(resp.code, resp.message)
+        return resp
+
+    def stop_microphone(self, *, session_id: str, stream_id: str) -> go2_sport_pb2.StopMicrophoneResponse:
+        req = go2_sport_pb2.StopMicrophoneRequest(session_id=session_id, stream_id=stream_id)
+        resp = self._stop_microphone_rpc(req, timeout=self._timeout)
+        self._ensure_ok(resp.code, resp.message)
+        return resp
+
+    def subscribe_microphone(
+        self, *, session_id: str, stream_id: str
+    ) -> Iterator[go2_sport_pb2.MicrophoneAudio]:
+        control = go2_sport_pb2.MicrophoneControl(
+            stream_id=stream_id,
+            command=go2_sport_pb2.MicrophoneControl.Command.Value("COMMAND_START"),
+        )
+        yield from self._subscribe_microphone_rpc(iter([control]), timeout=self._timeout)
 
     @staticmethod
     def _ensure_ok(code: int, message: str) -> None:

@@ -114,6 +114,12 @@ using go2::sport::v1::StartDetectionResponse;
 using go2::sport::v1::StopAudioPlaybackRequest;
 using go2::sport::v1::StopAudioPlaybackResponse;
 using go2::sport::v1::StopDetectionRequest;
+using go2::sport::v1::StopMicrophoneRequest;
+using go2::sport::v1::StopMicrophoneResponse;
+using go2::sport::v1::StartMicrophoneRequest;
+using go2::sport::v1::StartMicrophoneResponse;
+using go2::sport::v1::MicrophoneControl;
+using go2::sport::v1::MicrophoneAudio;
 using go2::sport::v1::StopDetectionResponse;
 using go2::sport::v1::SubscribeDetectionsRequest;
 
@@ -696,6 +702,14 @@ class AudioWebRtcManager {
         gst_object_unref(appsrc_);
         appsrc_ = nullptr;
       }
+      if (appsink_ != nullptr) {
+        gst_object_unref(appsink_);
+        appsink_ = nullptr;
+      }
+      if (rtpopusdepay_ != nullptr) {
+        gst_object_unref(rtpopusdepay_);
+        rtpopusdepay_ = nullptr;
+      }
       if (webrtc_ != nullptr) {
         gst_object_unref(webrtc_);
         webrtc_ = nullptr;
@@ -743,6 +757,11 @@ class AudioWebRtcManager {
     resp->set_last_error(last_error_);
   }
 
+  void SetAudioCaptureCallback(
+      std::function<void(const std::string&, const std::vector<uint8_t>&, uint64_t, bool)> callback) {
+    audio_capture_callback_ = std::move(callback);
+  }
+
  private:
   void SetError(const std::string& err) {
     last_error_ = err;
@@ -771,6 +790,124 @@ class AudioWebRtcManager {
 #if GO2_HAS_GSTREAMER_WEBRTC
   static void OnCreateOfferPromiseResolvedThunk(GstPromise* promise, gpointer user_data) {
     static_cast<AudioWebRtcManager*>(user_data)->OnCreateOfferPromiseResolved(promise);
+  }
+
+  static GstFlowReturn OnAppsinkNewSampleThunk(GstElement* appsink, gpointer user_data) {
+    return static_cast<AudioWebRtcManager*>(user_data)->OnAppsinkNewSample(appsink);
+  }
+
+  GstFlowReturn OnAppsinkNewSample(GstElement* appsink) {
+    if (!audio_capture_callback_) {
+      return GST_FLOW_OK;
+    }
+    GstSample* sample = gst_app_sink_pull_sample(GST_APP_SINK(appsink));
+    if (!sample) {
+      return GST_FLOW_OK;
+    }
+    GstBuffer* buffer = gst_sample_get_buffer(sample);
+    if (buffer) {
+      GstMapInfo map;
+      if (gst_buffer_map(buffer, &map, GST_MAP_READ)) {
+        std::vector<uint8_t> data(map.data, map.data + map.size);
+        uint64_t timestamp_ms = static_cast<uint64_t>(GST_BUFFER_PTS(buffer)) / 1000000;
+        audio_capture_callback_(active_stream_id_, data, timestamp_ms, false);
+        gst_buffer_unmap(buffer, &map);
+      }
+    }
+    gst_sample_unref(sample);
+    return GST_FLOW_OK;
+  }
+
+  static void OnPadAddedThunk(GstElement* src, GstPad* new_pad, gpointer user_data) {
+    static_cast<AudioWebRtcManager*>(user_data)->OnPadAdded(src, new_pad);
+  }
+
+  static GstPadProbeReturn OnRtpopusdepaySrcProbe(GstPad*, GstPadProbeInfo*, gpointer user_data) {
+    auto* self = static_cast<AudioWebRtcManager*>(user_data);
+    self->LinkRtpopusdepayToQueueRecv();
+    return GST_PAD_PROBE_REMOVE;
+  }
+
+  void OnPadAdded(GstElement* src, GstPad* new_pad) {
+    (void)src;
+    if (!rtpopusdepay_) {
+      return;
+    }
+    GstPad* sink_pad = gst_element_get_static_pad(rtpopusdepay_, "sink");
+    if (!sink_pad) {
+      return;
+    }
+    // Check if pad is already linked
+    if (gst_pad_is_linked(sink_pad)) {
+      gst_object_unref(sink_pad);
+      return;
+    }
+    // Check if this is an audio pad (check caps)
+    GstCaps* caps = gst_pad_query_caps(new_pad, nullptr);
+    if (!caps) {
+      gst_object_unref(sink_pad);
+      return;
+    }
+    // Check if it's audio
+    bool is_audio = false;
+    GstStructure* structure = gst_caps_get_structure(caps, 0);
+    if (structure) {
+      const gchar* media = gst_structure_get_string(structure, "media");
+      if (media && strcmp(media, "audio") == 0) {
+        is_audio = true;
+      }
+    }
+    gst_caps_unref(caps);
+    if (!is_audio) {
+      gst_object_unref(sink_pad);
+      return;
+    }
+    // Link the pads
+    GstPadLinkReturn ret = gst_pad_link(new_pad, sink_pad);
+    gst_object_unref(sink_pad);
+    if (ret != GST_PAD_LINK_OK) {
+      std::cerr << "Failed to link audio pad: " << gst_pad_link_return_get_name(ret) << std::endl;
+      return;
+    }
+    std::cerr << "Audio pad linked to rtpopusdepay" << std::endl;
+
+    // Now link rtpopusdepay src to queue_recv
+    // Use a probe on the src pad to know when it's ready
+    GstPad* rtpopusdepay_src = gst_element_get_static_pad(rtpopusdepay_, "src");
+    if (rtpopusdepay_src) {
+      // Check if src pad is already available and linked
+      if (gst_pad_is_linked(rtpopusdepay_src)) {
+        gst_object_unref(rtpopusdepay_src);
+        return;
+      }
+      // Install a probe to complete the link when src pad becomes available
+      gst_pad_add_probe(rtpopusdepay_src, GST_PAD_PROBE_TYPE_PAD_NEGOTIATION,
+                        OnRtpopusdepaySrcProbe, this, nullptr);
+      gst_object_unref(rtpopusdepay_src);
+    }
+  }
+
+  void LinkRtpopusdepayToQueueRecv() {
+    if (!rtpopusdepay_ || !pipeline_) {
+      return;
+    }
+    GstElement* queue_recv = gst_bin_get_by_name(GST_BIN(pipeline_), "queue_recv");
+    if (!queue_recv) {
+      return;
+    }
+    GstPad* src = gst_element_get_static_pad(rtpopusdepay_, "src");
+    GstPad* sink = gst_element_get_static_pad(queue_recv, "sink");
+    if (src && sink) {
+      if (!gst_pad_is_linked(src)) {
+        GstPadLinkReturn ret = gst_pad_link(src, sink);
+        if (ret == GST_PAD_LINK_OK) {
+          std::cerr << "rtpopusdepay linked to queue_recv" << std::endl;
+        }
+      }
+    }
+    if (src) gst_object_unref(src);
+    if (sink) gst_object_unref(sink);
+    gst_object_unref(queue_recv);
   }
 #endif
 
@@ -1409,10 +1546,77 @@ class AudioWebRtcManager {
       return;
     }
 #if GO2_HAS_GSTREAMER_WEBRTC
-    pipeline_ = gst_parse_launch(
-        "appsrc name=audiosrc is-live=true format=time ! queue ! opusparse ! rtpopuspay pt=111 ! "
-        "application/x-rtp,media=audio,encoding-name=OPUS,payload=111 ! webrtcbin name=webrtc",
-        nullptr);
+    // Create elements individually for proper dynamic pad handling
+    GstElement* pipeline = gst_pipeline_new(nullptr);
+    if (!pipeline) {
+      SetError("failed to create pipeline");
+      return;
+    }
+
+    appsrc_ = gst_element_factory_make("appsrc", "audiosrc");
+    GstElement* queue1 = gst_element_factory_make("queue", "queue1");
+    GstElement* opusparse_send = gst_element_factory_make("opusparse", "opusparse_send");
+    GstElement* rtpopuspay = gst_element_factory_make("rtpopuspay", "rtpopuspay");
+    GstElement* queue2 = gst_element_factory_make("queue", "queue2");
+    GstElement* rtpopusdepay = gst_element_factory_make("rtpopusdepay", "rtpopusdepay");
+    GstElement* queue_recv = gst_element_factory_make("queue", "queue_recv");
+    GstElement* opusparse_recv = gst_element_factory_make("opusparse", "opusparse_recv");
+    appsink_ = gst_element_factory_make("appsink", "audiosink");
+    webrtc_ = gst_element_factory_make("webrtcbin", "webrtc");
+
+    if (!appsrc_ || !queue1 || !opusparse_send || !rtpopuspay || !queue2 ||
+        !rtpopusdepay || !queue_recv || !opusparse_recv || !appsink_ || !webrtc_) {
+      SetError("failed to create gstreamer elements");
+      gst_object_unref(pipeline);
+      return;
+    }
+
+    // Store the receive path elements for dynamic linking
+    rtpopusdepay_ = rtpopusdepay;
+
+    // Configure appsrc for sending
+    GstCaps* opus_caps = gst_caps_new_simple("audio/x-opus", "channel-mapping-family", G_TYPE_INT, 0,
+                                             "rate", G_TYPE_INT, 48000, "channels", G_TYPE_INT, 1,
+                                             nullptr);
+    g_object_set(appsrc_, "caps", opus_caps, "format", GST_FORMAT_TIME, "is-live", TRUE,
+                 "do-timestamp", TRUE, nullptr);
+    gst_caps_unref(opus_caps);
+
+    // Configure appsink for receiving
+    g_object_set(appsink_, "emit-signals", TRUE, "sync", FALSE, nullptr);
+    g_signal_connect(appsink_, "new-sample",
+                     G_CALLBACK(AudioWebRtcManager::OnAppsinkNewSampleThunk), this);
+
+    // Add all elements to pipeline
+    gst_bin_add_many(GST_BIN(pipeline), appsrc_, queue1, opusparse_send, rtpopuspay,
+                     queue2, rtpopusdepay, queue_recv, opusparse_recv, appsink_, webrtc_, nullptr);
+
+    // Link send path: appsrc -> queue -> opusparse -> rtpopuspay -> queue -> webrtcbin
+    if (!gst_element_link_many(appsrc_, queue1, opusparse_send, rtpopuspay, queue2, webrtc_, nullptr)) {
+      SetError("failed to link send path");
+      gst_object_unref(pipeline);
+      pipeline = nullptr;
+      return;
+    }
+
+    // Link receive path: queue_recv -> opusparse_recv -> appsink (queue has static pads)
+    if (!gst_element_link_many(queue_recv, opusparse_recv, appsink_, nullptr)) {
+      SetError("failed to link receive path");
+      gst_object_unref(pipeline);
+      pipeline = nullptr;
+      return;
+    }
+
+    pipeline_ = pipeline;
+
+    // Connect webrtcbin signals
+    g_signal_connect(webrtc_, "on-negotiation-needed",
+                     G_CALLBACK(AudioWebRtcManager::OnNegotiationNeededThunk), this);
+    g_signal_connect(webrtc_, "on-ice-candidate",
+                     G_CALLBACK(AudioWebRtcManager::OnIceCandidateThunk), this);
+    // Connect to pad-added for dynamic audio pad linking
+    g_signal_connect(webrtc_, "pad-added",
+                     G_CALLBACK(AudioWebRtcManager::OnPadAddedThunk), this);
 #else
     pipeline_ = gst_parse_launch("fakesrc num-buffers=1 ! fakesink", nullptr);
 #endif
@@ -1420,25 +1624,6 @@ class AudioWebRtcManager {
       SetError("failed to create gstreamer pipeline");
       return;
     }
-#if GO2_HAS_GSTREAMER_WEBRTC
-    appsrc_ = gst_bin_get_by_name(GST_BIN(pipeline_), "audiosrc");
-    webrtc_ = gst_bin_get_by_name(GST_BIN(pipeline_), "webrtc");
-    if (webrtc_ == nullptr || appsrc_ == nullptr) {
-      SetError("pipeline missing webrtc/appsrc elements");
-    } else {
-      GstCaps* opus_caps = gst_caps_new_simple("audio/x-opus", "channel-mapping-family", G_TYPE_INT, 0,
-                                               "rate", G_TYPE_INT, 48000, "channels", G_TYPE_INT, 1,
-                                               nullptr);
-      g_object_set(appsrc_, "caps", opus_caps, "format", GST_FORMAT_TIME, "is-live", TRUE,
-                   "do-timestamp", TRUE, nullptr);
-      gst_caps_unref(opus_caps);
-
-      g_signal_connect(webrtc_, "on-negotiation-needed",
-                       G_CALLBACK(AudioWebRtcManager::OnNegotiationNeededThunk), this);
-      g_signal_connect(webrtc_, "on-ice-candidate",
-                       G_CALLBACK(AudioWebRtcManager::OnIceCandidateThunk), this);
-    }
-#endif
     gst_element_set_state(pipeline_, GST_STATE_PLAYING);
     connected_ = false;
 #endif
@@ -1520,9 +1705,141 @@ class AudioWebRtcManager {
 #if GO2_HAS_GSTREAMER
   GstElement* pipeline_{nullptr};
   GstElement* appsrc_{nullptr};
+  GstElement* appsink_{nullptr};
   GstElement* webrtc_{nullptr};
+  GstElement* rtpopusdepay_{nullptr};
 #endif
+  std::function<void(const std::string&, const std::vector<uint8_t>&, uint64_t, bool)> audio_capture_callback_;
 };
+
+class AudioCaptureManager {
+ public:
+  struct MicrophoneStream {
+    std::string stream_id;
+    std::string session_id;
+    std::atomic<bool> active{false};
+    std::mutex mu;
+    std::condition_variable cv;
+    std::deque<std::pair<std::vector<uint8_t>, uint64_t>> queue;
+  };
+
+  AudioCaptureManager() = default;
+  ~AudioCaptureManager() { StopAll(); }
+
+  bool StartMicrophone(const std::string& session_id, const std::string& stream_id,
+                       uint32_t sample_rate, uint32_t channels, std::string* err);
+
+  bool StopMicrophone(const std::string& stream_id);
+
+  void OnAudioFrame(const std::string& stream_id, const std::vector<uint8_t>& data,
+                    uint64_t timestamp_ms, bool is_silence);
+
+  bool ReadAudioData(const std::string& stream_id, std::vector<uint8_t>* out_data,
+                     uint64_t* out_timestamp_ms, bool* out_is_silence, int timeout_ms);
+
+  void StopAll();
+
+ private:
+  std::mutex streams_mu_;
+  std::unordered_map<std::string, std::shared_ptr<MicrophoneStream>> active_streams_;
+};
+
+bool AudioCaptureManager::StartMicrophone(const std::string& session_id,
+                                         const std::string& stream_id,
+                                         uint32_t /*sample_rate*/,
+                                         uint32_t /*channels*/,
+                                         std::string* err) {
+#if !GO2_HAS_GSTREAMER
+  (void)session_id;
+  (void)stream_id;
+  *err = "gstreamer is not available";
+  return false;
+#else
+  std::lock_guard<std::mutex> lock(streams_mu_);
+  if (active_streams_.count(stream_id) > 0) {
+    *err = "stream already exists";
+    return false;
+  }
+  auto stream = std::make_shared<MicrophoneStream>();
+  stream->stream_id = stream_id;
+  stream->session_id = session_id;
+  stream->active = true;
+  active_streams_[stream_id] = stream;
+  return true;
+#endif
+}
+
+bool AudioCaptureManager::StopMicrophone(const std::string& stream_id) {
+  std::lock_guard<std::mutex> lock(streams_mu_);
+  auto it = active_streams_.find(stream_id);
+  if (it == active_streams_.end()) {
+    return false;
+  }
+  it->second->active = false;
+  it->second->cv.notify_all();
+  active_streams_.erase(it);
+  return true;
+}
+
+void AudioCaptureManager::OnAudioFrame(const std::string& stream_id,
+                                      const std::vector<uint8_t>& data,
+                                      uint64_t timestamp_ms,
+                                      bool is_silence) {
+  std::lock_guard<std::mutex> lock(streams_mu_);
+  auto it = active_streams_.find(stream_id);
+  if (it == active_streams_.end()) {
+    return;
+  }
+  auto& stream = it->second;
+  std::lock_guard<std::mutex> stream_lock(stream->mu);
+  if (stream->queue.size() > 100) {
+    stream->queue.pop_front();
+  }
+  stream->queue.emplace_back(data, timestamp_ms);
+  stream->cv.notify_one();
+}
+
+bool AudioCaptureManager::ReadAudioData(const std::string& stream_id,
+                                       std::vector<uint8_t>* out_data,
+                                       uint64_t* out_timestamp_ms,
+                                       bool* out_is_silence,
+                                       int timeout_ms) {
+  std::shared_ptr<MicrophoneStream> stream;
+  {
+    std::lock_guard<std::mutex> lock(streams_mu_);
+    auto it = active_streams_.find(stream_id);
+    if (it == active_streams_.end()) {
+      return false;
+    }
+    stream = it->second;
+  }
+
+  std::unique_lock<std::mutex> stream_lock(stream->mu);
+  auto pred = [&]() { return !stream->active || !stream->queue.empty(); };
+  if (!stream->cv.wait_for(stream_lock, std::chrono::milliseconds(timeout_ms), pred)) {
+    return false;
+  }
+
+  if (!stream->active || stream->queue.empty()) {
+    return false;
+  }
+
+  auto& [data, ts] = stream->queue.front();
+  out_data->assign(data.begin(), data.end());
+  *out_timestamp_ms = ts;
+  *out_is_silence = false;
+  stream->queue.pop_front();
+  return true;
+}
+
+void AudioCaptureManager::StopAll() {
+  std::lock_guard<std::mutex> lock(streams_mu_);
+  for (auto& [id, stream] : active_streams_) {
+    stream->active = false;
+    stream->cv.notify_all();
+  }
+  active_streams_.clear();
+}
 
 class UdpDiscoveryBroadcaster {
  public:
@@ -1677,6 +1994,22 @@ class Go2SportServiceImpl final : public Go2SportService::Service {
         std::cerr << "detection debug frame dump enabled: " << detect_debug_dir_ << std::endl;
       }
     }
+    const char* timing_log_path = std::getenv("GO2_DETECT_TIMING_LOG");
+    if (timing_log_path != nullptr && std::strlen(timing_log_path) > 0) {
+      detect_timing_log_.open(timing_log_path, std::ios::app);
+      if (detect_timing_log_.is_open()) {
+        std::cerr << "detection timing log enabled: " << timing_log_path << std::endl;
+        detect_timing_log_ << "# Detection Timing Log\n";
+        detect_timing_log_ << "# timestamp_ms,frame_id,stream_id,fps_limit,frame_skip,fetch_ms,infer_ms,total_ms,detections\n";
+        detect_timing_log_.flush();
+      } else {
+        std::cerr << "failed to open GO2_DETECT_TIMING_LOG=" << timing_log_path << std::endl;
+      }
+    }
+    audio_mgr_.SetAudioCaptureCallback([this](const std::string& stream_id, const std::vector<uint8_t>& data,
+                                             uint64_t timestamp_ms, bool is_silence) {
+      mic_mgr_.OnAudioFrame(stream_id, data, timestamp_ms, is_silence);
+    });
     audio_mgr_.Start();
 
     gc_thread_ = std::thread([this]() { SessionGcLoop(); });
@@ -1685,9 +2018,13 @@ class Go2SportServiceImpl final : public Go2SportService::Service {
   ~Go2SportServiceImpl() override {
     StopAllDetectionStreams();
     audio_mgr_.Stop();
+    mic_mgr_.StopAll();
     stop_gc_.store(true);
     if (gc_thread_.joinable()) {
       gc_thread_.join();
+    }
+    if (detect_timing_log_.is_open()) {
+      detect_timing_log_.close();
     }
   }
 
@@ -2067,6 +2404,73 @@ class Go2SportServiceImpl final : public Go2SportService::Service {
     return grpc::Status::OK;
   }
 
+  grpc::Status StartMicrophone(grpc::ServerContext*, const StartMicrophoneRequest* req,
+                               StartMicrophoneResponse* resp) override {
+    if (!SessionExists(req->session_id())) {
+      resp->set_code(404);
+      resp->set_message("session not found");
+      return grpc::Status::OK;
+    }
+    std::string stream_id = req->stream_id().empty() ? GenerateStreamId() : req->stream_id();
+    std::string err;
+    if (!mic_mgr_.StartMicrophone(req->session_id(), stream_id, req->sample_rate(),
+                                  req->channels(), &err)) {
+      resp->set_code(500);
+      resp->set_message(err);
+      return grpc::Status::OK;
+    }
+    resp->set_code(0);
+    resp->set_message("ok");
+    resp->set_stream_id(stream_id);
+    return grpc::Status::OK;
+  }
+
+  grpc::Status StopMicrophone(grpc::ServerContext*, const StopMicrophoneRequest* req,
+                              StopMicrophoneResponse* resp) override {
+    if (!SessionExists(req->session_id())) {
+      resp->set_code(404);
+      resp->set_message("session not found");
+      resp->set_stopped(false);
+      return grpc::Status::OK;
+    }
+    const bool stopped = mic_mgr_.StopMicrophone(req->stream_id());
+    resp->set_code(0);
+    resp->set_message("ok");
+    resp->set_stopped(stopped);
+    return grpc::Status::OK;
+  }
+
+  grpc::Status SubscribeMicrophone(grpc::ServerContext* ctx,
+                                  grpc::ServerReaderWriter<MicrophoneAudio, MicrophoneControl>* stream) override {
+    MicrophoneControl control;
+    if (!stream->Read(&control)) {
+      return grpc::Status::OK;
+    }
+    if (control.command() != MicrophoneControl::COMMAND_START) {
+      return grpc::Status::OK;
+    }
+    const std::string& stream_id = control.stream_id();
+    while (!ctx->IsCancelled()) {
+      std::vector<uint8_t> data;
+      uint64_t ts = 0;
+      bool is_silence = false;
+      if (mic_mgr_.ReadAudioData(stream_id, &data, &ts, &is_silence, 100)) {
+        MicrophoneAudio audio;
+        audio.set_stream_id(stream_id);
+        audio.set_audio_data(data.data(), data.size());
+        audio.set_timestamp_ms(ts);
+        audio.set_is_silence(is_silence);
+        if (!stream->Write(audio)) {
+          break;
+        }
+      }
+      if (stream->Read(&control) && control.command() == MicrophoneControl::COMMAND_STOP) {
+        break;
+      }
+    }
+    return grpc::Status::OK;
+  }
+
  private:
   struct ActionResult {
     int32_t code;
@@ -2256,7 +2660,8 @@ class Go2SportServiceImpl final : public Go2SportService::Service {
     auto last_run = std::chrono::steady_clock::now() - min_interval;
 
     while (!stream->stop.load()) {
-      auto now = std::chrono::steady_clock::now();
+      auto loop_start = std::chrono::steady_clock::now();
+      auto now = loop_start;
       if (now - last_run < min_interval) {
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
         continue;
@@ -2266,19 +2671,30 @@ class Go2SportServiceImpl final : public Go2SportService::Service {
         continue;
       }
 
+      auto fetch_start = std::chrono::steady_clock::now();
       std::vector<uint8_t> image_sample;
       if (video_client_->GetImageSample(image_sample) != 0) {
         continue;
       }
+      auto fetch_end = std::chrono::steady_clock::now();
       MaybeDumpDetectionInput(stream->stream_id, image_sample);
 
       std::string err;
       if (!engine_.EnsureLoaded(stream->model_path, &err)) {
         continue;
       }
+      auto infer_start = std::chrono::steady_clock::now();
       const auto detections = engine_.Infer(image_sample, stream->cfg);
+      auto infer_end = std::chrono::steady_clock::now();
       const uint64_t frame_id = next_frame_id_.fetch_add(1);
       PublishDetectionEvent(stream, detections, frame_id);
+
+      auto loop_end = std::chrono::steady_clock::now();
+      int64_t fetch_ms = std::chrono::duration_cast<std::chrono::milliseconds>(fetch_end - fetch_start).count();
+      int64_t infer_ms = std::chrono::duration_cast<std::chrono::milliseconds>(infer_end - infer_start).count();
+      int64_t total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(loop_end - loop_start).count();
+      LogDetectionTiming(stream->stream_id, frame_id, stream->fps_limit, stream->frame_skip,
+                         fetch_ms, infer_ms, total_ms, detections.size());
     }
   }
 
@@ -2315,6 +2731,27 @@ class Go2SportServiceImpl final : public Go2SportService::Service {
     ofs.write(reinterpret_cast<const char*>(image_sample.data()), static_cast<std::streamsize>(image_sample.size()));
   }
 
+  void LogDetectionTiming(const std::string& stream_id, uint64_t frame_id,
+                          uint32_t fps_limit, uint32_t frame_skip,
+                          int64_t fetch_ms, int64_t infer_ms, int64_t total_ms,
+                          size_t detection_count) {
+    if (!detect_timing_log_.is_open()) {
+      return;
+    }
+    std::lock_guard<std::mutex> lock(detect_timing_mu_);
+    detect_timing_log_ << NowUnixMs()
+                       << "," << frame_id
+                       << "," << stream_id
+                       << "," << fps_limit
+                       << "," << frame_skip
+                       << "," << fetch_ms
+                       << "," << infer_ms
+                       << "," << total_ms
+                       << "," << detection_count
+                       << "\n";
+    detect_timing_log_.flush();
+  }
+
   void SessionGcLoop() {
     while (!stop_gc_.load()) {
       {
@@ -2344,12 +2781,15 @@ class Go2SportServiceImpl final : public Go2SportService::Service {
   std::string detect_debug_dir_;
   std::mutex detect_debug_mu_;
   std::unordered_map<std::string, uint64_t> detect_debug_seq_;
+  std::ofstream detect_timing_log_;
+  std::mutex detect_timing_mu_;
   std::atomic<uint64_t> next_frame_id_{1};
   std::unique_ptr<unitree::robot::go2::SportClient> sport_client_;
   std::unique_ptr<unitree::robot::go2::ObstaclesAvoidClient> obstacles_avoid_client_;
   std::unique_ptr<unitree::robot::go2::VideoClient> video_client_;
   YoloTrtEngine engine_;
   AudioWebRtcManager audio_mgr_;
+  AudioCaptureManager mic_mgr_;
 };
 
 }  // namespace

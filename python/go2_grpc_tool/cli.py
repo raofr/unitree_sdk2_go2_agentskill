@@ -101,6 +101,23 @@ def main() -> None:
     p_audio_stop.add_argument("--session-id", required=True)
     p_audio_stop.add_argument("--stream-id", default="")
 
+    p_mic_start = sub.add_parser("mic-start")
+    _add_common(p_mic_start)
+    p_mic_start.add_argument("--session-id", required=True)
+    p_mic_start.add_argument("--stream-id", default="")
+    p_mic_start.add_argument("--sample-rate", type=int, default=48000)
+    p_mic_start.add_argument("--channels", type=int, default=1)
+
+    p_mic_stop = sub.add_parser("mic-stop")
+    _add_common(p_mic_stop)
+    p_mic_stop.add_argument("--session-id", required=True)
+    p_mic_stop.add_argument("--stream-id", required=True)
+
+    p_mic_subscribe = sub.add_parser("mic-subscribe")
+    _add_common(p_mic_subscribe)
+    p_mic_subscribe.add_argument("--session-id", required=True)
+    p_mic_subscribe.add_argument("--stream-id", required=True)
+
     args = parser.parse_args()
     client = Go2SportClient(endpoint=args.endpoint, timeout_sec=args.timeout)
 
@@ -301,6 +318,35 @@ def main() -> None:
     if args.command == "audio-stop":
         resp = client.stop_audio_playback(session_id=args.session_id, stream_id=args.stream_id)
         print(json.dumps({"stopped": bool(resp.stopped)}))
+        return
+
+    if args.command == "mic-start":
+        resp = client.start_microphone(
+            session_id=args.session_id,
+            stream_id=args.stream_id,
+            sample_rate=args.sample_rate,
+            channels=args.channels,
+        )
+        print(json.dumps({"stream_id": resp.stream_id}))
+        return
+
+    if args.command == "mic-stop":
+        resp = client.stop_microphone(session_id=args.session_id, stream_id=args.stream_id)
+        print(json.dumps({"stopped": bool(resp.stopped)}))
+        return
+
+    if args.command == "mic-subscribe":
+        for audio in client.subscribe_microphone(session_id=args.session_id, stream_id=args.stream_id):
+            print(
+                json.dumps(
+                    {
+                        "stream_id": audio.stream_id,
+                        "timestamp_ms": int(audio.timestamp_ms),
+                        "is_silence": bool(audio.is_silence),
+                        "audio_data_len": len(audio.audio_data),
+                    }
+                )
+            )
         return
 
 

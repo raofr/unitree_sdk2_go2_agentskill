@@ -197,6 +197,18 @@ Camera frame dump control:
 - `GO2_DETECT_DEBUG_DIR=` (empty) => disabled (recommended default).
 - `GO2_DETECT_DEBUG_DIR=/some/path` => enabled (for troubleshooting only).
 
+Detection timing log (for performance measurement):
+- `GO2_DETECT_TIMING_LOG=` (empty) => disabled (recommended default).
+- `GO2_DETECT_TIMING_LOG=/some/path/timing.csv` => enabled, logs per-frame timing.
+
+Timing log format (CSV):
+```
+timestamp_ms,frame_id,stream_id,fps_limit,frame_skip,fetch_ms,infer_ms,total_ms,detections
+```
+- `fetch_ms`: time to fetch image from robot camera
+- `infer_ms`: time for TensorRT GPU inference
+- `total_ms`: total loop iteration time
+
 After env change:
 
 ```bash
