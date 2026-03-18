@@ -1,0 +1,3 @@
+[submodule "go2_agent_tool"]
+	path = go2_agent_tool
+	url = https://github.com/raofr/go2_agent_tool.git
