@@ -16,6 +16,7 @@
 #include <mutex>
 #include <optional>
 #include <random>
+#include <set>
 #include <shared_mutex>
 #include <sstream>
 #include <string>
@@ -240,24 +241,82 @@ std::string NormalizeListenAddress(const std::string& listen_address) {
 
 struct AdvertisedAddresses {
   std::string ipv4;
+  std::vector<std::string> ipv4_list;
   std::string ipv6;
 };
+
+std::vector<std::string> ResolveAllNonLoopbackIpv4() {
+  struct ifaddrs* ifaddr = nullptr;
+  if (getifaddrs(&ifaddr) != 0) {
+    return {};
+  }
+
+  std::set<std::string> uniq;
+  for (struct ifaddrs* ifa = ifaddr; ifa != nullptr; ifa = ifa->ifa_next) {
+    if (ifa->ifa_addr == nullptr || ifa->ifa_addr->sa_family != AF_INET) {
+      continue;
+    }
+    if ((ifa->ifa_flags & IFF_LOOPBACK) != 0) {
+      continue;
+    }
+
+    char ip[INET_ADDRSTRLEN] = {0};
+    const auto* sin = reinterpret_cast<struct sockaddr_in*>(ifa->ifa_addr);
+    if (inet_ntop(AF_INET, &(sin->sin_addr), ip, sizeof(ip)) == nullptr) {
+      continue;
+    }
+    if (ip[0] != '\0') {
+      uniq.insert(ip);
+    }
+  }
+
+  freeifaddrs(ifaddr);
+  return std::vector<std::string>(uniq.begin(), uniq.end());
+}
 
 AdvertisedAddresses ResolveAdvertisedAddresses(const std::string& network_interface,
                                                const std::string& listen_address) {
   AdvertisedAddresses out;
   out.ipv4 = ResolveInterfaceIpv4(network_interface);
   out.ipv6 = ResolveInterfaceIpv6(network_interface);
+  if (!out.ipv4.empty()) {
+    out.ipv4_list.push_back(out.ipv4);
+  }
+
+  const char* adv_all_ipv4_env = std::getenv("GO2_DISCOVERY_ADVERTISE_ALL_IPV4");
+  const bool advertise_all_ipv4 =
+      (adv_all_ipv4_env == nullptr) ||
+      !(std::string(adv_all_ipv4_env) == "0" || std::string(adv_all_ipv4_env) == "false");
+  if (advertise_all_ipv4) {
+    const std::vector<std::string> all_v4 = ResolveAllNonLoopbackIpv4();
+    for (const auto& ip : all_v4) {
+      if (ip.empty()) {
+        continue;
+      }
+      if (std::find(out.ipv4_list.begin(), out.ipv4_list.end(), ip) == out.ipv4_list.end()) {
+        out.ipv4_list.push_back(ip);
+      }
+    }
+  }
 
   const std::string normalized_listen = NormalizeListenAddress(listen_address);
   if (normalized_listen.empty()) {
+    if (out.ipv4.empty() && !out.ipv4_list.empty()) {
+      out.ipv4 = out.ipv4_list.front();
+    }
     return out;
   }
   if (out.ipv4.empty() && normalized_listen.find(':') == std::string::npos) {
     out.ipv4 = normalized_listen;
+    if (std::find(out.ipv4_list.begin(), out.ipv4_list.end(), out.ipv4) == out.ipv4_list.end()) {
+      out.ipv4_list.push_back(out.ipv4);
+    }
   }
   if (out.ipv6.empty() && normalized_listen.find(':') != std::string::npos) {
     out.ipv6 = normalized_listen;
+  }
+  if (out.ipv4.empty() && !out.ipv4_list.empty()) {
+    out.ipv4 = out.ipv4_list.front();
   }
   return out;
 }
@@ -2504,16 +2563,25 @@ class UdpDiscoveryBroadcaster {
       const uint64_t now_ms = NowUnixMs();
 
       if (sock4 >= 0) {
-        std::ostringstream payload4;
-        payload4 << "{\"service\":\"" << service_name_ << "\",\"family\":\"ipv4\",\"ip\":\""
-                 << addresses_.ipv4 << "\",\"port\":" << grpc_port_ << ",\"ts_ms\":" << now_ms
-                 << "}";
-        const std::string body4 = payload4.str();
-        const ssize_t sent4 = sendto(sock4, body4.data(), body4.size(), 0,
-                                     reinterpret_cast<struct sockaddr*>(&addr4), sizeof(addr4));
-        if (sent4 < 0) {
-          std::cerr << "Warning: IPv4 UDP discovery broadcast failed: " << std::strerror(errno)
-                    << std::endl;
+        std::vector<std::string> advertised_ipv4s = addresses_.ipv4_list;
+        if (advertised_ipv4s.empty() && !addresses_.ipv4.empty()) {
+          advertised_ipv4s.push_back(addresses_.ipv4);
+        }
+        if (advertised_ipv4s.empty()) {
+          advertised_ipv4s.push_back("");
+        }
+        for (const auto& ip : advertised_ipv4s) {
+          std::ostringstream payload4;
+          payload4 << "{\"service\":\"" << service_name_ << "\",\"family\":\"ipv4\",\"ip\":\""
+                   << ip << "\",\"port\":" << grpc_port_ << ",\"ts_ms\":" << now_ms
+                   << "}";
+          const std::string body4 = payload4.str();
+          const ssize_t sent4 = sendto(sock4, body4.data(), body4.size(), 0,
+                                       reinterpret_cast<struct sockaddr*>(&addr4), sizeof(addr4));
+          if (sent4 < 0) {
+            std::cerr << "Warning: IPv4 UDP discovery broadcast failed: " << std::strerror(errno)
+                      << std::endl;
+          }
         }
       }
 
@@ -3419,9 +3487,20 @@ int main(int argc, char** argv) {
 
   std::cout << "go2_sport_grpc_server listening on " << listen_address << ":" << port
             << " using robot interface " << network_interface << std::endl;
+  std::ostringstream ipv4_list_ss;
+  if (advertised_addrs.ipv4_list.empty()) {
+    ipv4_list_ss << (advertised_addrs.ipv4.empty() ? "<sender-ip>" : advertised_addrs.ipv4);
+  } else {
+    for (size_t i = 0; i < advertised_addrs.ipv4_list.size(); ++i) {
+      if (i > 0) {
+        ipv4_list_ss << ",";
+      }
+      ipv4_list_ss << advertised_addrs.ipv4_list[i];
+    }
+  }
   std::cout << "UDP discovery broadcasting go2_sport_grpc endpoint to port " << kDiscoveryUdpPort
-            << " with advertised ipv4 "
-            << (advertised_addrs.ipv4.empty() ? "<sender-ip>" : advertised_addrs.ipv4)
+            << " with advertised ipv4(s) "
+            << ipv4_list_ss.str()
             << " and ipv6 "
             << (advertised_addrs.ipv6.empty() ? "<sender-ip>" : advertised_addrs.ipv6)
             << std::endl;
