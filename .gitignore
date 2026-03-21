@@ -28,6 +28,10 @@ thirdparty/grpc_cross
 models/
 models/**/*.engine
 models/**/*.onnx
+!models/
+!models/yolo26/
+!models/yolo26/aarch64/
+!models/yolo26/aarch64/yolo26s.engine
 
 # runtime/debug outputs
 test/cat.jpg
