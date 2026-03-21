@@ -197,6 +197,18 @@ Camera frame dump control:
 - `GO2_DETECT_DEBUG_DIR=` (empty) => disabled (recommended default).
 - `GO2_DETECT_DEBUG_DIR=/some/path` => enabled (for troubleshooting only).
 
+Microphone bridge sidecar (optional fallback when C++ webrtcbin cannot receive mic):
+- `GO2_MIC_BRIDGE_MODE=udp`
+- `GO2_MIC_BRIDGE_UDP_PORT=39001`
+- `GO2_MIC_BRIDGE_SIDECAR_ENABLE=1`
+- `GO2_MIC_BRIDGE_GO2_IP=192.168.123.161`
+- `GO2_MIC_BRIDGE_STREAM_ID=bridge1`
+- `GO2_MIC_BRIDGE_SIDECAR_PYTHON=/home/unitree/workspace/go2_webrtc_connect/.venv_mic310/bin/python`
+- `GO2_MIC_BRIDGE_SIDECAR_PYTHONPATH=/home/unitree/workspace/go2_webrtc_connect`
+- `GO2_MIC_BRIDGE_SIDECAR_SCRIPT=/home/unitree/openclaw/go2_grpc/scripts/go2_grpc/mic_bridge_webrtc_sidecar.py`
+
+With these set, `go2_sport_grpc.service` starts/stops sidecar automatically.
+
 Detection timing log (for performance measurement):
 - `GO2_DETECT_TIMING_LOG=` (empty) => disabled (recommended default).
 - `GO2_DETECT_TIMING_LOG=/some/path/timing.csv` => enabled, logs per-frame timing.
@@ -387,6 +399,54 @@ node src/cli.js --endpoint 192.168.51.213:50051 audio-upload-play --session-id <
 node src/cli.js --endpoint 192.168.51.213:50051 audio-status --session-id <id>
 node src/cli.js --endpoint 192.168.51.213:50051 audio-stop --session-id <id> --stream-id audio-main
 ```
+
+### 4.3 Microphone bridge fallback (Python WebRTC -> C++ gRPC)
+
+Use this when C++ `webrtcbin` receives no microphone packets but Python `go2_webrtc_connect` works.
+
+1) Start C++ server with UDP microphone bridge enabled:
+
+```bash
+export GO2_MIC_BRIDGE_MODE=udp
+export GO2_MIC_BRIDGE_UDP_PORT=39001
+```
+
+2) Prepare Python runtime on dock host (wheel-only install, no source compile):
+
+```bash
+cd /home/unitree/workspace/go2_webrtc_connect
+/home/unitree/.local/bin/uv python install 3.10
+/home/unitree/.local/bin/uv venv --python 3.10 .venv_mic310
+. .venv_mic310/bin/activate
+UV_INDEX_URL=https://pypi.org/simple /home/unitree/.local/bin/uv pip install --only-binary=:all: aiortc requests pycryptodome packaging numpy lz4 wasmtime
+```
+
+3) Start sidecar sender (robot microphone -> localhost UDP bridge):
+
+```bash
+cd /home/unitree/workspace/go2_webrtc_connect
+. .venv_mic310/bin/activate
+PYTHONPATH=/home/unitree/workspace/go2_webrtc_connect \
+python /home/unitree/workspace/unitree_sdk2/scripts/go2_grpc/mic_bridge_webrtc_sidecar.py \
+  --go2-ip 192.168.123.161 \
+  --stream-id bridge1 \
+  --udp-host 127.0.0.1 \
+  --udp-port 39001
+```
+
+4) Subscribe from Node client as usual:
+
+```bash
+cd go2_agent_tool/node
+node src/cli.js --endpoint 192.168.51.213:50051 mic-start --session-id <id> --stream-id bridge1 --sample-rate 48000 --channels 2
+node src/cli.js --endpoint 192.168.51.213:50051 mic-subscribe --session-id <id> --stream-id bridge1
+```
+
+Bridge packet format (UDP payload):
+- byte `0`: version (currently `1`)
+- byte `1`: stream_id length
+- bytes `2..9`: timestamp_ms (`uint64`, little-endian)
+- bytes `10..`: `stream_id` + raw audio bytes
 
 ## 5) Offline Validation Notes
 

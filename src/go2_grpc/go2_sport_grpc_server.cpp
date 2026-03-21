@@ -713,6 +713,10 @@ class AudioWebRtcManager {
         gst_object_unref(rtpopusdepay_);
         rtpopusdepay_ = nullptr;
       }
+      if (data_channel_ != nullptr) {
+        gst_object_unref(data_channel_);
+        data_channel_ = nullptr;
+      }
       if (webrtc_ != nullptr) {
         gst_object_unref(webrtc_);
         webrtc_ = nullptr;
@@ -720,6 +724,15 @@ class AudioWebRtcManager {
       gst_object_unref(pipeline_);
       pipeline_ = nullptr;
     }
+    if (gst_main_loop_ != nullptr) {
+      g_main_loop_quit(gst_main_loop_);
+      if (gst_main_loop_thread_.joinable()) {
+        gst_main_loop_thread_.join();
+      }
+      g_main_loop_unref(gst_main_loop_);
+      gst_main_loop_ = nullptr;
+    }
+    send_path_ready_ = false;
 #endif
   }
 
@@ -765,6 +778,14 @@ class AudioWebRtcManager {
     audio_capture_callback_ = std::move(callback);
   }
 
+  void RequestRemoteAudioOn() {
+#if GO2_HAS_GSTREAMER_WEBRTC
+    std::lock_guard<std::mutex> lock(mu_);
+    want_remote_audio_on_ = true;
+    TrySendAudioSwitchLocked();
+#endif
+  }
+
  private:
   void SetError(const std::string& err) {
     last_error_ = err;
@@ -793,6 +814,77 @@ class AudioWebRtcManager {
 #if GO2_HAS_GSTREAMER_WEBRTC
   static void OnCreateOfferPromiseResolvedThunk(GstPromise* promise, gpointer user_data) {
     static_cast<AudioWebRtcManager*>(user_data)->OnCreateOfferPromiseResolved(promise);
+  }
+
+  static void OnDataChannelOpenThunk(GObject*, gpointer user_data) {
+    static_cast<AudioWebRtcManager*>(user_data)->OnDataChannelOpen();
+  }
+
+  static void OnDataChannelCloseThunk(GObject*, gpointer user_data) {
+    static_cast<AudioWebRtcManager*>(user_data)->OnDataChannelClose();
+  }
+
+  static void OnDataChannelMessageStringThunk(GObject*, gchar* text, gpointer user_data) {
+    static_cast<AudioWebRtcManager*>(user_data)->OnDataChannelMessageString(text);
+  }
+
+  static void OnIncomingDataChannelThunk(GstElement*, GObject* channel, gpointer user_data) {
+    static_cast<AudioWebRtcManager*>(user_data)->OnIncomingDataChannel(channel);
+  }
+
+  void OnIncomingDataChannel(GObject* channel) {
+    if (channel == nullptr) {
+      return;
+    }
+    std::lock_guard<std::mutex> lock(mu_);
+    if (data_channel_ != nullptr) {
+      gst_object_unref(data_channel_);
+      data_channel_ = nullptr;
+    }
+    data_channel_ = G_OBJECT(gst_object_ref(channel));
+    g_signal_connect(data_channel_, "on-open",
+                     G_CALLBACK(AudioWebRtcManager::OnDataChannelOpenThunk), this);
+    g_signal_connect(data_channel_, "on-close",
+                     G_CALLBACK(AudioWebRtcManager::OnDataChannelCloseThunk), this);
+    g_signal_connect(data_channel_, "on-message-string",
+                     G_CALLBACK(AudioWebRtcManager::OnDataChannelMessageStringThunk), this);
+    std::cerr << "[webrtc] incoming data channel attached" << std::endl;
+    TrySendAudioSwitchLocked();
+  }
+
+  void OnDataChannelOpen() {
+    std::lock_guard<std::mutex> lock(mu_);
+    data_channel_open_ = true;
+    std::cerr << "[webrtc] data channel opened" << std::endl;
+    TrySendAudioSwitchLocked();
+  }
+
+  void OnDataChannelClose() {
+    std::lock_guard<std::mutex> lock(mu_);
+    data_channel_open_ = false;
+    audio_switch_on_sent_ = false;
+    std::cerr << "[webrtc] data channel closed" << std::endl;
+  }
+
+  void OnDataChannelMessageString(const gchar* text) {
+    if (text == nullptr) {
+      return;
+    }
+    const std::string msg(text);
+    if (msg.find("validation") != std::string::npos || msg.find("err") != std::string::npos) {
+      std::cerr << "[webrtc][dc-rx] " << msg << std::endl;
+    }
+  }
+
+  bool TrySendAudioSwitchLocked() {
+    if (!want_remote_audio_on_ || audio_switch_on_sent_ || data_channel_ == nullptr || !data_channel_open_) {
+      return false;
+    }
+    static const char* kAudioOnMsg = "{\"type\":\"aud\",\"topic\":\"\",\"data\":\"on\"}";
+    g_signal_emit_by_name(data_channel_, "send-string", kAudioOnMsg);
+    audio_switch_on_sent_ = true;
+    std::cerr << "[webrtc] sent datachannel aud=on" << std::endl;
+    return true;
   }
 
   static GstFlowReturn OnAppsinkNewSampleThunk(GstElement* appsink, gpointer user_data) {
@@ -833,6 +925,7 @@ class AudioWebRtcManager {
 
   void OnPadAdded(GstElement* src, GstPad* new_pad) {
     (void)src;
+    std::cerr << "[webrtc] pad-added callback" << std::endl;
     if (!rtpopusdepay_) {
       return;
     }
@@ -875,7 +968,8 @@ class AudioWebRtcManager {
     std::cerr << "Audio pad linked to rtpopusdepay" << std::endl;
 
     // Now link rtpopusdepay src to queue_recv
-    // Use a probe on the src pad to know when it's ready
+    // Try immediate link first, then leave the probe as fallback.
+    LinkRtpopusdepayToQueueRecv();
     GstPad* rtpopusdepay_src = gst_element_get_static_pad(rtpopusdepay_, "src");
     if (rtpopusdepay_src) {
       // Check if src pad is already available and linked
@@ -905,6 +999,9 @@ class AudioWebRtcManager {
         GstPadLinkReturn ret = gst_pad_link(src, sink);
         if (ret == GST_PAD_LINK_OK) {
           std::cerr << "rtpopusdepay linked to queue_recv" << std::endl;
+        } else {
+          std::cerr << "failed linking rtpopusdepay->queue_recv ret="
+                    << static_cast<int>(ret) << std::endl;
         }
       }
     }
@@ -1423,14 +1520,20 @@ class AudioWebRtcManager {
 
 #if GO2_HAS_GSTREAMER_WEBRTC
   void OnNegotiationNeeded() {
-    std::lock_guard<std::mutex> lock(mu_);
-    if (webrtc_ == nullptr) {
-      SetError("webrtc element is null in negotiation");
-      return;
+    GstElement* webrtc_ref = nullptr;
+    {
+      std::lock_guard<std::mutex> lock(mu_);
+      if (webrtc_ == nullptr) {
+        SetError("webrtc element is null in negotiation");
+        return;
+      }
+      webrtc_ref = GST_ELEMENT(gst_object_ref(webrtc_));
     }
+    std::cerr << "[webrtc] negotiation needed" << std::endl;
     GstPromise* promise = gst_promise_new_with_change_func(
         AudioWebRtcManager::OnCreateOfferPromiseResolvedThunk, this, nullptr);
-    g_signal_emit_by_name(webrtc_, "create-offer", nullptr, promise);
+    g_signal_emit_by_name(webrtc_ref, "create-offer", nullptr, promise);
+    gst_object_unref(webrtc_ref);
   }
 
   void OnCreateOfferPromiseResolved(GstPromise* promise) {
@@ -1443,6 +1546,7 @@ class AudioWebRtcManager {
       SetError("failed to create offer");
       return;
     }
+    std::cerr << "[webrtc] offer created" << std::endl;
 
     {
       std::lock_guard<std::mutex> lock(mu_);
@@ -1454,6 +1558,16 @@ class AudioWebRtcManager {
 
     gchar* sdp_text = gst_sdp_message_as_text(offer->sdp);
     const std::string local_offer = sdp_text != nullptr ? sdp_text : "";
+    {
+      std::istringstream iss(local_offer);
+      std::string line;
+      while (std::getline(iss, line)) {
+        if (line.rfind("m=audio", 0) == 0 || line.rfind("a=send", 0) == 0 ||
+            line.rfind("a=recv", 0) == 0 || line.rfind("a=inactive", 0) == 0) {
+          std::cerr << "[webrtc][offer] " << line << std::endl;
+        }
+      }
+    }
     std::string answer_sdp;
     std::string answer_type;
     std::string err;
@@ -1465,6 +1579,18 @@ class AudioWebRtcManager {
       }
       gst_webrtc_session_description_free(offer);
       return;
+    }
+    std::cerr << "[webrtc] answer resolved type=" << answer_type
+              << " len=" << answer_sdp.size() << std::endl;
+    {
+      std::istringstream iss(answer_sdp);
+      std::string line;
+      while (std::getline(iss, line)) {
+        if (line.rfind("m=audio", 0) == 0 || line.rfind("a=send", 0) == 0 ||
+            line.rfind("a=recv", 0) == 0 || line.rfind("a=inactive", 0) == 0) {
+          std::cerr << "[webrtc][answer] " << line << std::endl;
+        }
+      }
     }
     if (sdp_text != nullptr) {
       g_free(sdp_text);
@@ -1495,6 +1621,7 @@ class AudioWebRtcManager {
         gst_webrtc_session_description_free(answer);
         std::lock_guard<std::mutex> lock(mu_);
         connected_ = true;
+        std::cerr << "[webrtc] remote description applied" << std::endl;
       } else {
         std::lock_guard<std::mutex> lock(mu_);
         SetError("failed to parse answer SDP from signaling hook");
@@ -1521,7 +1648,7 @@ class AudioWebRtcManager {
   }
 
   bool PushOpusBytes(const std::vector<uint8_t>& payload) {
-    if (appsrc_ == nullptr) {
+    if (!send_path_ready_ || appsrc_ == nullptr || !GST_IS_ELEMENT(appsrc_)) {
       return false;
     }
     GstBuffer* buffer = gst_buffer_new_allocate(nullptr, payload.size(), nullptr);
@@ -1545,6 +1672,14 @@ class AudioWebRtcManager {
 
   void InitPipelineIfNeeded() {
 #if GO2_HAS_GSTREAMER
+    if (gst_main_loop_ == nullptr) {
+      gst_main_loop_ = g_main_loop_new(nullptr, FALSE);
+      gst_main_loop_thread_ = std::thread([this]() {
+        if (gst_main_loop_ != nullptr) {
+          g_main_loop_run(gst_main_loop_);
+        }
+      });
+    }
     if (pipeline_) {
       return;
     }
@@ -1594,12 +1729,70 @@ class AudioWebRtcManager {
     gst_bin_add_many(GST_BIN(pipeline), appsrc_, queue1, opusparse_send, rtpopuspay,
                      queue2, rtpopusdepay, queue_recv, opusparse_recv, appsink_, webrtc_, nullptr);
 
-    // Link send path: appsrc -> queue -> opusparse -> rtpopuspay -> queue -> webrtcbin
-    if (!gst_element_link_many(appsrc_, queue1, opusparse_send, rtpopuspay, queue2, webrtc_, nullptr)) {
-      SetError("failed to link send path");
-      gst_object_unref(pipeline);
-      pipeline = nullptr;
-      return;
+    // Request recvonly audio transceiver so incoming microphone track can be
+    // negotiated independently from the local send path health.
+    GstCaps* recv_rtp_caps = gst_caps_new_simple(
+        "application/x-rtp",
+        "media", G_TYPE_STRING, "audio",
+        "encoding-name", G_TYPE_STRING, "OPUS",
+        "payload", G_TYPE_INT, 96,
+        "clock-rate", G_TYPE_INT, 48000,
+        nullptr);
+    GstWebRTCRTPTransceiver* recv_transceiver = nullptr;
+              g_signal_emit_by_name(webrtc_, "add-transceiver",
+                                    GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_SENDRECV,
+                                    recv_rtp_caps, &recv_transceiver);
+              if (recv_transceiver == nullptr) {
+                // Older plugin variants may reject explicit caps; retry without caps.
+                g_signal_emit_by_name(webrtc_, "add-transceiver",
+                                      GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_SENDRECV,
+                                      nullptr, &recv_transceiver);
+              }
+    if (recv_transceiver != nullptr) {
+                std::cerr << "[webrtc] sendrecv transceiver added" << std::endl;
+      gst_object_unref(recv_transceiver);
+              } else {
+                std::cerr << "[webrtc] failed to add sendrecv transceiver" << std::endl;
+    }
+    gst_caps_unref(recv_rtp_caps);
+
+    g_signal_connect(webrtc_, "on-data-channel",
+                     G_CALLBACK(AudioWebRtcManager::OnIncomingDataChannelThunk), this);
+
+    // Create control data channel so we can send AUD on/off commands that
+    // enable microphone track delivery from the robot.
+    GstStructure* dc_opts = gst_structure_new_empty("data-channel-options");
+    GObject* data_channel = nullptr;
+    g_signal_emit_by_name(webrtc_, "create-data-channel", "data", dc_opts, &data_channel);
+    gst_structure_free(dc_opts);
+    if (data_channel != nullptr) {
+      OnIncomingDataChannel(data_channel);
+      gst_object_unref(data_channel);
+      std::cerr << "[webrtc] data channel created" << std::endl;
+    } else {
+      std::cerr << "[webrtc] failed to create data channel" << std::endl;
+    }
+
+    // Link send path to queue2 first. If this fails, keep pipeline alive for
+    // receive-only microphone capture.
+    send_path_ready_ = false;
+              if (gst_element_link_many(appsrc_, queue1, opusparse_send, rtpopuspay, queue2, nullptr)) {
+                GstPad* queue2_src = gst_element_get_static_pad(queue2, "src");
+                GstPad* webrtc_sink = gst_element_get_request_pad(webrtc_, "sink_%u");
+                if (queue2_src != nullptr && webrtc_sink != nullptr &&
+                    gst_pad_link(queue2_src, webrtc_sink) == GST_PAD_LINK_OK) {
+                  send_path_ready_ = true;
+                }
+                if (queue2_src != nullptr) {
+                  gst_object_unref(queue2_src);
+                }
+                if (webrtc_sink != nullptr) {
+                  gst_object_unref(webrtc_sink);
+                }
+              }
+              if (!send_path_ready_) {
+                std::cerr << "warning: send path link failed; microphone receive may still work"
+                          << std::endl;
     }
 
     // Link receive path: queue_recv -> opusparse_recv -> appsink (queue has static pads)
@@ -1607,6 +1800,10 @@ class AudioWebRtcManager {
       SetError("failed to link receive path");
       gst_object_unref(pipeline);
       pipeline = nullptr;
+      appsrc_ = nullptr;
+      appsink_ = nullptr;
+      webrtc_ = nullptr;
+      rtpopusdepay_ = nullptr;
       return;
     }
 
@@ -1629,6 +1826,13 @@ class AudioWebRtcManager {
     }
     gst_element_set_state(pipeline_, GST_STATE_PLAYING);
     connected_ = false;
+#if GO2_HAS_GSTREAMER_WEBRTC
+    // Kick off one negotiation cycle explicitly: some environments do not emit
+    // on-negotiation-needed reliably for recvonly-first setups.
+    if (webrtc_ != nullptr) {
+      OnNegotiationNeeded();
+    }
+#endif
 #endif
   }
 
@@ -1643,6 +1847,12 @@ class AudioWebRtcManager {
   void RunLoop() {
     InitPipelineIfNeeded();
     while (!stop_.load()) {
+#if GO2_HAS_GSTREAMER
+      // Drive GLib callbacks (webrtc offer promise, pad-added, appsink).
+      while (g_main_context_pending(nullptr)) {
+        g_main_context_iteration(nullptr, false);
+      }
+#endif
       Item item;
       bool has_item = false;
       {
@@ -1705,12 +1915,21 @@ class AudioWebRtcManager {
   std::string signal_ice_cmd_;
   std::string signal_answer_cmd_;
   std::string signal_mode_{"auto"};
+  bool send_path_ready_{false};
+  bool want_remote_audio_on_{false};
+  bool audio_switch_on_sent_{false};
+  bool data_channel_open_{false};
 #if GO2_HAS_GSTREAMER
   GstElement* pipeline_{nullptr};
   GstElement* appsrc_{nullptr};
   GstElement* appsink_{nullptr};
   GstElement* webrtc_{nullptr};
   GstElement* rtpopusdepay_{nullptr};
+  GMainLoop* gst_main_loop_{nullptr};
+  std::thread gst_main_loop_thread_;
+#endif
+#if GO2_HAS_GSTREAMER_WEBRTC
+  GObject* data_channel_{nullptr};
 #endif
   std::function<void(const std::string&, const std::vector<uint8_t>&, uint64_t, bool)> audio_capture_callback_;
 };
@@ -1726,7 +1945,7 @@ class AudioCaptureManager {
     std::deque<std::pair<std::vector<uint8_t>, uint64_t>> queue;
   };
 
-  AudioCaptureManager() = default;
+  AudioCaptureManager();
   ~AudioCaptureManager() { StopAll(); }
 
   bool StartMicrophone(const std::string& session_id, const std::string& stream_id,
@@ -1740,12 +1959,44 @@ class AudioCaptureManager {
   bool ReadAudioData(const std::string& stream_id, std::vector<uint8_t>* out_data,
                      uint64_t* out_timestamp_ms, bool* out_is_silence, int timeout_ms);
 
+  bool IsMicrophoneActive(const std::string& stream_id);
+
   void StopAll();
 
  private:
+  void StartUdpBridgeIfNeeded();
+  void StopUdpBridge();
+  void UdpBridgeLoop();
+
   std::mutex streams_mu_;
   std::unordered_map<std::string, std::shared_ptr<MicrophoneStream>> active_streams_;
+  bool bridge_enabled_{false};
+  uint16_t bridge_port_{0};
+  std::atomic<bool> bridge_stop_{false};
+  std::thread bridge_thread_;
+  int bridge_sock_fd_{-1};
 };
+
+AudioCaptureManager::AudioCaptureManager() {
+  const char* mode = std::getenv("GO2_MIC_BRIDGE_MODE");
+  if (mode == nullptr || std::string(mode) != "udp") {
+    return;
+  }
+  const char* port_env = std::getenv("GO2_MIC_BRIDGE_UDP_PORT");
+  if (port_env == nullptr || std::strlen(port_env) == 0) {
+    bridge_port_ = 39001;
+  } else {
+    try {
+      const auto parsed = std::stoul(port_env);
+      if (parsed > 0 && parsed <= 65535) {
+        bridge_port_ = static_cast<uint16_t>(parsed);
+      }
+    } catch (...) {
+      bridge_port_ = 0;
+    }
+  }
+  bridge_enabled_ = bridge_port_ != 0;
+}
 
 bool AudioCaptureManager::StartMicrophone(const std::string& session_id,
                                          const std::string& stream_id,
@@ -1758,6 +2009,7 @@ bool AudioCaptureManager::StartMicrophone(const std::string& session_id,
   *err = "gstreamer is not available";
   return false;
 #else
+  StartUdpBridgeIfNeeded();
   std::lock_guard<std::mutex> lock(streams_mu_);
   if (active_streams_.count(stream_id) > 0) {
     *err = "stream already exists";
@@ -1789,17 +2041,32 @@ void AudioCaptureManager::OnAudioFrame(const std::string& stream_id,
                                       uint64_t timestamp_ms,
                                       bool is_silence) {
   std::lock_guard<std::mutex> lock(streams_mu_);
-  auto it = active_streams_.find(stream_id);
-  if (it == active_streams_.end()) {
+  if (active_streams_.empty()) {
     return;
   }
-  auto& stream = it->second;
-  std::lock_guard<std::mutex> stream_lock(stream->mu);
-  if (stream->queue.size() > 100) {
-    stream->queue.pop_front();
+
+  auto push_frame = [&](const std::shared_ptr<MicrophoneStream>& stream) {
+    std::lock_guard<std::mutex> stream_lock(stream->mu);
+    if (stream->queue.size() > 100) {
+      stream->queue.pop_front();
+    }
+    stream->queue.emplace_back(data, timestamp_ms);
+    stream->cv.notify_one();
+  };
+
+  if (!stream_id.empty()) {
+    auto it = active_streams_.find(stream_id);
+    if (it != active_streams_.end()) {
+      push_frame(it->second);
+      return;
+    }
   }
-  stream->queue.emplace_back(data, timestamp_ms);
-  stream->cv.notify_one();
+
+  // Fallback: if callback stream_id is unavailable, fanout to all active
+  // microphone streams so subscribers still receive incoming audio.
+  for (auto& kv : active_streams_) {
+    push_frame(kv.second);
+  }
 }
 
 bool AudioCaptureManager::ReadAudioData(const std::string& stream_id,
@@ -1835,7 +2102,14 @@ bool AudioCaptureManager::ReadAudioData(const std::string& stream_id,
   return true;
 }
 
+bool AudioCaptureManager::IsMicrophoneActive(const std::string& stream_id) {
+  std::lock_guard<std::mutex> lock(streams_mu_);
+  auto it = active_streams_.find(stream_id);
+  return it != active_streams_.end() && it->second->active.load();
+}
+
 void AudioCaptureManager::StopAll() {
+  StopUdpBridge();
   std::lock_guard<std::mutex> lock(streams_mu_);
   for (auto& [id, stream] : active_streams_) {
     stream->active = false;
@@ -1843,6 +2117,320 @@ void AudioCaptureManager::StopAll() {
   }
   active_streams_.clear();
 }
+
+void AudioCaptureManager::StartUdpBridgeIfNeeded() {
+  if (!bridge_enabled_) {
+    return;
+  }
+  if (bridge_thread_.joinable()) {
+    return;
+  }
+  bridge_stop_.store(false);
+  bridge_thread_ = std::thread([this]() { UdpBridgeLoop(); });
+}
+
+void AudioCaptureManager::StopUdpBridge() {
+  bridge_stop_.store(true);
+  if (bridge_sock_fd_ >= 0) {
+    shutdown(bridge_sock_fd_, SHUT_RDWR);
+  }
+  if (bridge_thread_.joinable()) {
+    bridge_thread_.join();
+  }
+}
+
+void AudioCaptureManager::UdpBridgeLoop() {
+  const int sock = socket(AF_INET, SOCK_DGRAM, 0);
+  if (sock < 0) {
+    std::cerr << "[mic-bridge] failed to create UDP socket" << std::endl;
+    return;
+  }
+  bridge_sock_fd_ = sock;
+
+  sockaddr_in addr {};
+  addr.sin_family = AF_INET;
+  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  addr.sin_port = htons(bridge_port_);
+  if (bind(sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+    std::cerr << "[mic-bridge] bind failed on 127.0.0.1:" << bridge_port_ << std::endl;
+    close(sock);
+    bridge_sock_fd_ = -1;
+    return;
+  }
+
+  timeval tv {};
+  tv.tv_sec = 0;
+  tv.tv_usec = 200000;
+  setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+  std::cerr << "[mic-bridge] listening on 127.0.0.1:" << bridge_port_ << std::endl;
+
+  std::vector<uint8_t> buf(65535);
+  while (!bridge_stop_.load()) {
+    const ssize_t n = recvfrom(sock, buf.data(), buf.size(), 0, nullptr, nullptr);
+    if (n <= 0) {
+      continue;
+    }
+    // Packet format:
+    // [0]=version(1), [1]=stream_id_len, [2..9]=timestamp_ms_le_u64,
+    // [10..10+stream_id_len)=stream_id utf8, [rest]=audio bytes.
+    if (n < 10) {
+      continue;
+    }
+    if (buf[0] != 1) {
+      continue;
+    }
+    const uint8_t sid_len = buf[1];
+    const size_t header_len = static_cast<size_t>(10 + sid_len);
+    if (static_cast<size_t>(n) < header_len) {
+      continue;
+    }
+    uint64_t ts = 0;
+    for (int i = 0; i < 8; ++i) {
+      ts |= static_cast<uint64_t>(buf[2 + i]) << (8 * i);
+    }
+    const std::string stream_id(reinterpret_cast<const char*>(buf.data() + 10), sid_len);
+    std::vector<uint8_t> payload;
+    payload.insert(payload.end(), buf.begin() + static_cast<std::ptrdiff_t>(header_len),
+                   buf.begin() + n);
+    OnAudioFrame(stream_id, payload, ts, false);
+  }
+
+  close(sock);
+  bridge_sock_fd_ = -1;
+}
+
+class AudioPlaybackBridgeManager {
+ public:
+  struct Item {
+    std::string stream_id;
+    std::string request_id;
+    std::string mime;
+    uint32_t sample_rate{0};
+    uint32_t channels{0};
+    float volume{1.0f};
+    bool loop{false};
+    std::vector<uint8_t> audio_bytes;
+  };
+
+  explicit AudioPlaybackBridgeManager(const std::string& go2_host_ip) : go2_host_ip_(go2_host_ip) {
+    const char* enable = std::getenv("GO2_AUDIO_PLAY_BRIDGE_ENABLE");
+    if (enable != nullptr && std::string(enable) == "0") {
+      enabled_ = false;
+    }
+    const char* py = std::getenv("GO2_AUDIO_PLAY_BRIDGE_PYTHON");
+    if (py != nullptr && std::strlen(py) > 0) {
+      python_bin_ = py;
+    }
+    const char* pypath = std::getenv("GO2_AUDIO_PLAY_BRIDGE_PYTHONPATH");
+    if (pypath != nullptr && std::strlen(pypath) > 0) {
+      python_path_ = pypath;
+    }
+    const char* script = std::getenv("GO2_AUDIO_PLAY_BRIDGE_SCRIPT");
+    if (script != nullptr && std::strlen(script) > 0) {
+      script_path_ = script;
+    }
+    const char* ip = std::getenv("GO2_AUDIO_PLAY_BRIDGE_GO2_IP");
+    if (ip != nullptr && std::strlen(ip) > 0) {
+      go2_host_ip_ = ip;
+    }
+  }
+
+  void Start() {}
+
+  void Stop() {
+    std::lock_guard<std::mutex> lock(mu_);
+    playing_ = false;
+  }
+
+  bool Enqueue(Item item, std::string* err) {
+    if (!enabled_) {
+      *err = "python audio playback bridge is disabled";
+      return false;
+    }
+    if (item.audio_bytes.empty()) {
+      *err = "audio_bytes is empty";
+      return false;
+    }
+    const std::string suffix = InferSuffix(item.mime);
+    const std::string input_file = WriteAudioTemp(item.audio_bytes, suffix);
+    if (input_file.empty()) {
+      *err = "failed to write temporary audio file";
+      return false;
+    }
+
+    const std::string stream_id = item.stream_id.empty() ? ChooseBridgeStreamId() : item.stream_id;
+    const std::string request_id = item.request_id;
+    std::ostringstream vol_ss;
+    vol_ss << item.volume;
+    const std::string cmd =
+        "env PYTHONPATH=" + ShellQuote(python_path_) + " " + ShellQuote(python_bin_) + " " +
+        ShellQuote(script_path_) + " --go2-ip " + ShellQuote(go2_host_ip_) + " --input " +
+        ShellQuote(input_file) + " --mime " + ShellQuote(item.mime) + " --stream-id " +
+        ShellQuote(stream_id) + " --request-id " + ShellQuote(request_id) + " --volume " +
+        ShellQuote(vol_ss.str()) + (item.loop ? " --loop" : "") + " --delete-input";
+
+    std::string out;
+    std::string run_err;
+    const bool ok = RunDetachedCommand(cmd, &run_err);
+    std::lock_guard<std::mutex> lock(mu_);
+    active_stream_id_ = stream_id;
+    connected_ = ok;
+    playing_ = ok;
+    if (!ok) {
+      last_error_ = "python playback bridge failed: " + run_err;
+      last_error_ts_ms_ = NowUnixMs();
+      *err = last_error_;
+      return false;
+    }
+    last_error_.clear();
+    last_error_ts_ms_ = 0;
+    return true;
+  }
+
+  bool StopPlayback(const std::string& stream_id) {
+    if (!enabled_) {
+      return false;
+    }
+    const std::string cmd =
+        "env PYTHONPATH=" + ShellQuote(python_path_) + " " + ShellQuote(python_bin_) + " " +
+        ShellQuote(script_path_) + " --go2-ip " + ShellQuote(go2_host_ip_) + " --stop";
+    std::string out;
+    std::string err;
+    const bool ok = RunCommand(cmd, &out, &err);
+    std::lock_guard<std::mutex> lock(mu_);
+    if (!stream_id.empty()) {
+      active_stream_id_ = stream_id;
+    }
+    playing_ = false;
+    if (!ok) {
+      last_error_ = "python playback stop failed: " + err;
+      last_error_ts_ms_ = NowUnixMs();
+    }
+    return ok;
+  }
+
+  void FillStatus(GetAudioStatusResponse* resp) {
+    std::lock_guard<std::mutex> lock(mu_);
+    resp->set_connected(connected_);
+    resp->set_playing(playing_);
+    resp->set_stream_id(active_stream_id_);
+    resp->set_queued_items(0);
+    resp->set_last_error_ts_ms(last_error_ts_ms_);
+    resp->set_last_error(last_error_);
+  }
+
+  void SetAudioCaptureCallback(
+      std::function<void(const std::string&, const std::vector<uint8_t>&, uint64_t, bool)> /*callback*/) {}
+
+  void RequestRemoteAudioOn() {}
+
+ private:
+  static std::string ShellQuote(const std::string& raw) {
+    std::string out = "'";
+    for (char c : raw) {
+      if (c == '\'') {
+        out += "'\\''";
+      } else {
+        out += c;
+      }
+    }
+    out += "'";
+    return out;
+  }
+
+  static std::string InferSuffix(const std::string& mime) {
+    std::string lower = mime;
+    for (char& c : lower) {
+      c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
+    if (lower.find("mpeg") != std::string::npos || lower.find("mp3") != std::string::npos) {
+      return ".mp3";
+    }
+    if (lower.find("wav") != std::string::npos) {
+      return ".wav";
+    }
+    if (lower.find("opus") != std::string::npos) {
+      return ".opus";
+    }
+    return ".bin";
+  }
+
+  static std::string ChooseBridgeStreamId() {
+    std::ostringstream ss;
+    ss << "audio-bridge-" << NowUnixMs();
+    return ss.str();
+  }
+
+  static std::string WriteAudioTemp(const std::vector<uint8_t>& bytes, const std::string& suffix) {
+    char tmpl[] = "/tmp/go2_audio_bridge_XXXXXX";
+    const int fd = mkstemp(tmpl);
+    if (fd < 0) {
+      return "";
+    }
+    const std::string base = tmpl;
+    std::string path = base + suffix;
+    FILE* f = fdopen(fd, "wb");
+    if (f == nullptr) {
+      close(fd);
+      unlink(base.c_str());
+      return "";
+    }
+    if (!bytes.empty()) {
+      fwrite(bytes.data(), 1, bytes.size(), f);
+    }
+    fclose(f);
+    if (std::rename(base.c_str(), path.c_str()) != 0) {
+      unlink(base.c_str());
+      return "";
+    }
+    return path;
+  }
+
+  static bool RunCommand(const std::string& cmd, std::string* out, std::string* err) {
+    FILE* pipe = popen((cmd + " 2>&1").c_str(), "r");
+    if (pipe == nullptr) {
+      *err = "failed to start command";
+      return false;
+    }
+    char buf[512];
+    std::string output;
+    while (fgets(buf, sizeof(buf), pipe) != nullptr) {
+      output += buf;
+    }
+    const int rc = pclose(pipe);
+    if (out != nullptr) {
+      *out = output;
+    }
+    if (rc != 0) {
+      *err = output.empty() ? ("command exit code " + std::to_string(rc)) : output;
+      return false;
+    }
+    return true;
+  }
+
+  static bool RunDetachedCommand(const std::string& cmd, std::string* err) {
+    const std::string full = "nohup " + cmd +
+                             " >/tmp/go2_audio_play_bridge.log 2>&1 < /dev/null &";
+    const int rc = std::system(full.c_str());
+    if (rc != 0) {
+      *err = "failed to start detached command, rc=" + std::to_string(rc);
+      return false;
+    }
+    return true;
+  }
+
+  std::mutex mu_;
+  bool enabled_{true};
+  bool connected_{false};
+  bool playing_{false};
+  std::string active_stream_id_;
+  uint64_t last_error_ts_ms_{0};
+  std::string last_error_;
+  std::string python_bin_{"/home/unitree/workspace/go2_webrtc_connect/.venv_mic310/bin/python"};
+  std::string python_path_{"/home/unitree/workspace/go2_webrtc_connect"};
+  std::string script_path_{"/home/unitree/openclaw/go2_grpc/scripts/go2_grpc/audio_play_webrtc_sidecar.py"};
+  std::string go2_host_ip_;
+};
 
 class UdpDiscoveryBroadcaster {
  public:
@@ -2353,7 +2941,7 @@ class Go2SportServiceImpl final : public Go2SportService::Service {
     }
 
     const std::string stream_id = ChooseOrGenerateStreamId(req->stream_id());
-    AudioWebRtcManager::Item item;
+    AudioPlaybackBridgeManager::Item item;
     item.stream_id = stream_id;
     item.request_id = req->request_id();
     item.mime = req->mime();
@@ -2422,6 +3010,7 @@ class Go2SportServiceImpl final : public Go2SportService::Service {
       resp->set_message(err);
       return grpc::Status::OK;
     }
+    audio_mgr_.RequestRemoteAudioOn();
     resp->set_code(0);
     resp->set_message("ok");
     resp->set_stream_id(stream_id);
@@ -2454,6 +3043,9 @@ class Go2SportServiceImpl final : public Go2SportService::Service {
     }
     const std::string& stream_id = control.stream_id();
     while (!ctx->IsCancelled()) {
+      if (!mic_mgr_.IsMicrophoneActive(stream_id)) {
+        break;
+      }
       std::vector<uint8_t> data;
       uint64_t ts = 0;
       bool is_silence = false;
@@ -2466,9 +3058,6 @@ class Go2SportServiceImpl final : public Go2SportService::Service {
         if (!stream->Write(audio)) {
           break;
         }
-      }
-      if (stream->Read(&control) && control.command() == MicrophoneControl::COMMAND_STOP) {
-        break;
       }
     }
     return grpc::Status::OK;
@@ -2791,7 +3380,7 @@ class Go2SportServiceImpl final : public Go2SportService::Service {
   std::unique_ptr<unitree::robot::go2::ObstaclesAvoidClient> obstacles_avoid_client_;
   std::unique_ptr<unitree::robot::go2::VideoClient> video_client_;
   YoloTrtEngine engine_;
-  AudioWebRtcManager audio_mgr_;
+  AudioPlaybackBridgeManager audio_mgr_;
   AudioCaptureManager mic_mgr_;
 };
 
