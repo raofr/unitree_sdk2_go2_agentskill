@@ -44,3 +44,4 @@ test/go2_camera_latest.jpg
 .DS_Store
 
 
+.tmp_*

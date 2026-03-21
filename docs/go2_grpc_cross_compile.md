@@ -1,71 +1,115 @@
-# GO2 gRPC Cross-Compile and Deploy Guide
+# GO2 gRPC Cross-Compile and GO2 Dock Deploy Guide
 
-This project now includes an optional GO2 sport gRPC service.
+This document focuses on GO2 dock deployment, including model conversion for GO2 aarch64 runtime.
 
-## 1. Host prerequisites (x86_64 build machine)
+Default target used below:
 
-Install base tools:
+- Dock host: `unitree@192.168.123.18`
+- Repo dir on dock: `/home/unitree/workspace/unitree_sdk2`
 
-- cmake
-- ninja-build or make
-- aarch64-linux-gnu-gcc / aarch64-linux-gnu-g++
-- protobuf compiler and gRPC C++ dev package for cross build environment
+## 1) Cross-build server binary (optional)
 
-For Python client:
+On x86_64 host:
 
-- python3
-- pip
-- grpcio
-- grpcio-tools
-- protobuf
+```bash
+./scripts/go2_grpc/cross_build_aarch64.sh
+```
 
-## 2. Configure cross build
+Output:
 
-Use the provided toolchain file:
+- `build-aarch64/bin/go2_sport_grpc_server`
 
-- cmake/toolchains/aarch64-ubuntu2004.cmake
+If you already build directly on dock host, you can skip cross-build.
 
-Optional:
+## 2) Sync code to GO2 dock host
 
-- set GO2_AARCH64_SYSROOT to Ubuntu 20.04 aarch64 sysroot path for ABI consistency.
+```bash
+rsync -az --delete \
+  --exclude '.git/' \
+  --exclude 'build/' --exclude 'build-*/' --exclude 'cmake-build-*/' \
+  --exclude 'thirdparty/grpc_local/' --exclude 'thirdparty/grpc_cross/' \
+  --exclude '.venv*/' \
+  /home/raofr/unitree_sdk2/ \
+  unitree@192.168.123.18:/home/unitree/workspace/unitree_sdk2/
+```
 
-## 3. Build server (aarch64)
+## 3) Build server on GO2 dock host
 
-Run:
+```bash
+ssh unitree@192.168.123.18 "cd /home/unitree/workspace/unitree_sdk2 && \
+  cmake -S . -B build-aarch64 \
+    -DBUILD_GO2_GRPC=ON -DBUILD_EXAMPLES=OFF -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_CXX_FLAGS='-I/usr/local/cuda/include -DGO2_HAS_TENSORRT_LINK=1' && \
+  cmake --build build-aarch64 --target go2_sport_grpc_server -j\$(nproc)"
+```
 
-- scripts/go2_grpc/cross_build_aarch64.sh
+## 4) Deploy GO2 model for dock runtime
 
-This creates:
+### 4.1 Copy model source files to dock
 
-- build-aarch64/bin/go2_sport_grpc_server
+Recommended: copy both `.pt` (archive/source) and `.onnx` (for binary conversion):
 
-## 4. Generate Python gRPC stubs
+```bash
+rsync -az models/yolo26/yolo26s.pt \
+  unitree@192.168.123.18:/home/unitree/workspace/unitree_sdk2/models/yolo26/yolo26s.pt
 
-Run:
+rsync -az models/yolo26/yolo26s.onnx \
+  unitree@192.168.123.18:/home/unitree/workspace/unitree_sdk2/models/yolo26/yolo26s.onnx
+```
 
-- scripts/generate_python_stubs.sh
+### 4.2 Convert to TensorRT engine on dock (binary-only path)
 
-## 5. Deploy to dock
+No Python conversion required in this path:
 
-Set env vars as needed:
+```bash
+ssh unitree@192.168.123.18 "mkdir -p /home/unitree/workspace/unitree_sdk2/models/yolo26/aarch64 && \
+  /usr/src/tensorrt/bin/trtexec \
+    --onnx=/home/unitree/workspace/unitree_sdk2/models/yolo26/yolo26s.onnx \
+    --saveEngine=/home/unitree/workspace/unitree_sdk2/models/yolo26/aarch64/yolo26s.engine \
+    --fp16 --buildOnly"
+```
 
-- GO2_DOCK_HOST (default 192.168.51.213)
-- GO2_DOCK_USER (default unitree)
-- GO2_DOCK_PASSWORD (default 123)
-- GO2_DOCK_DIR (default /home/unitree/openclaw/go2_grpc)
+Expected final line:
 
-Deploy:
+- `PASSED TensorRT.trtexec`
 
-- scripts/go2_grpc/deploy.sh
+### 4.3 Verify engine exists
 
-## 6. Manage remote service
+```bash
+ssh unitree@192.168.123.18 "ls -lh /home/unitree/workspace/unitree_sdk2/models/yolo26/aarch64/yolo26s.engine"
+```
 
-- Start: scripts/go2_grpc/run.sh
-- Stop: scripts/go2_grpc/kill.sh
-- Status: scripts/go2_grpc/status.sh
+## 5) Start service with GO2 dock model
 
-## 7. Skill default policy
+If using systemd service:
 
-Unless parallel mode is explicitly required, new tasks should cleanup previous owner sessions before issuing new actions.
+```bash
+ssh unitree@192.168.123.18 "printf '123\n' | sudo -S systemctl restart go2_sport_grpc.service && \
+  printf '123\n' | sudo -S systemctl is-active go2_sport_grpc.service"
+```
 
-- scripts/go2_grpc/exec_action.sh enforces this default when GO2_PARALLEL is not true.
+Model path in service env:
+
+- `/home/unitree/workspace/unitree_sdk2/models/yolo26/aarch64/yolo26s.engine`
+
+If using script control:
+
+```bash
+GO2_DOCK_HOST=192.168.123.18 \
+GO2_MODEL_PATH=/home/unitree/workspace/unitree_sdk2/models/yolo26/aarch64/yolo26s.engine \
+GO2_HOST_IP=192.168.123.161 \
+./scripts/go2_grpc/run.sh
+```
+
+## 6) Quick detect-once smoke test
+
+```bash
+cd go2_agent_tool/node
+OPEN_JSON=$(node src/cli.js --endpoint 192.168.123.18:50051 open-session --owner openclaw --ttl-sec 120)
+SID=$(printf '%s' "$OPEN_JSON" | python3 -c 'import sys,json; print(json.load(sys.stdin)["session_id"])')
+node src/cli.js --endpoint 192.168.123.18:50051 detect-once \
+  --session-id "$SID" \
+  --model-path /home/unitree/workspace/unitree_sdk2/models/yolo26/aarch64/yolo26s.engine \
+  --conf-thres 0.1 --iou-thres 0.45 --max-det 20
+node src/cli.js --endpoint 192.168.123.18:50051 close-session --session-id "$SID"
+```
