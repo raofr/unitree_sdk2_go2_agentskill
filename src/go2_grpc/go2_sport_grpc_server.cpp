@@ -63,6 +63,9 @@
 #define GO2_HAS_GSTREAMER_WEBRTC 1
 #include <gst/webrtc/webrtc.h>
 #include <gst/sdp/gstsdpmessage.h>
+#if __has_include(<gst/app/gstappsink.h>)
+#include <gst/app/gstappsink.h>
+#endif
 #else
 #define GO2_HAS_GSTREAMER_WEBRTC 0
 #endif
@@ -866,7 +869,7 @@ class AudioWebRtcManager {
     GstPadLinkReturn ret = gst_pad_link(new_pad, sink_pad);
     gst_object_unref(sink_pad);
     if (ret != GST_PAD_LINK_OK) {
-      std::cerr << "Failed to link audio pad: " << gst_pad_link_return_get_name(ret) << std::endl;
+      std::cerr << "Failed to link audio pad, ret=" << static_cast<int>(ret) << std::endl;
       return;
     }
     std::cerr << "Audio pad linked to rtpopusdepay" << std::endl;
@@ -881,7 +884,7 @@ class AudioWebRtcManager {
         return;
       }
       // Install a probe to complete the link when src pad becomes available
-      gst_pad_add_probe(rtpopusdepay_src, GST_PAD_PROBE_TYPE_PAD_NEGOTIATION,
+      gst_pad_add_probe(rtpopusdepay_src, GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM,
                         OnRtpopusdepaySrcProbe, this, nullptr);
       gst_object_unref(rtpopusdepay_src);
     }
@@ -2411,7 +2414,7 @@ class Go2SportServiceImpl final : public Go2SportService::Service {
       resp->set_message("session not found");
       return grpc::Status::OK;
     }
-    std::string stream_id = req->stream_id().empty() ? GenerateStreamId() : req->stream_id();
+    std::string stream_id = ChooseOrGenerateStreamId(req->stream_id());
     std::string err;
     if (!mic_mgr_.StartMicrophone(req->session_id(), stream_id, req->sample_rate(),
                                   req->channels(), &err)) {
