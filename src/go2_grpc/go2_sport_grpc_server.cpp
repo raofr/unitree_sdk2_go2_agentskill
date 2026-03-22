@@ -2322,15 +2322,14 @@ class AudioPlaybackBridgeManager {
     std::ostringstream vol_ss;
     vol_ss << item.volume;
     const std::string cmd =
-        "env PYTHONPATH=" + ShellQuote(python_path_) + " " + ShellQuote(python_bin_) + " " +
+        "timeout 70s env PYTHONPATH=" + ShellQuote(python_path_) + " " + ShellQuote(python_bin_) + " " +
         ShellQuote(script_path_) + " --go2-ip " + ShellQuote(go2_host_ip_) + " --input " +
         ShellQuote(input_file) + " --mime " + ShellQuote(item.mime) + " --stream-id " +
         ShellQuote(stream_id) + " --request-id " + ShellQuote(request_id) + " --volume " +
         ShellQuote(vol_ss.str()) + (item.loop ? " --loop" : "") + " --delete-input";
 
-    std::string out;
     std::string run_err;
-    const bool ok = RunDetachedCommand(cmd, &run_err);
+    const bool ok = StartDetachedCommand(cmd, &run_err);
     std::lock_guard<std::mutex> lock(mu_);
     active_stream_id_ = stream_id;
     connected_ = ok;
@@ -2365,6 +2364,9 @@ class AudioPlaybackBridgeManager {
       last_error_ = "python playback stop failed: " + err;
       last_error_ts_ms_ = NowUnixMs();
     }
+    // Ensure any lingering sidecar is terminated on stop.
+    std::system("pkill -f audio_play_webrtc_sidecar.py >/dev/null 2>&1 || true");
+    playback_job_running_.store(false);
     return ok;
   }
 
@@ -2467,14 +2469,25 @@ class AudioPlaybackBridgeManager {
     return true;
   }
 
-  static bool RunDetachedCommand(const std::string& cmd, std::string* err) {
-    const std::string full = "nohup " + cmd +
-                             " >/tmp/go2_audio_play_bridge.log 2>&1 < /dev/null &";
-    const int rc = std::system(full.c_str());
-    if (rc != 0) {
-      *err = "failed to start detached command, rc=" + std::to_string(rc);
-      return false;
+  bool StartDetachedCommand(const std::string& cmd, std::string* err) {
+    (void)err;
+    const uint64_t generation = playback_generation_.fetch_add(1) + 1;
+    {
+      std::lock_guard<std::mutex> launch_lock(playback_launch_mu_);
+      // Default preempt mode: new request interrupts any running playback.
+      if (playback_job_running_.load()) {
+        std::system("pkill -f audio_play_webrtc_sidecar.py >/dev/null 2>&1 || true");
+        std::this_thread::sleep_for(std::chrono::milliseconds(120));
+      }
+      playback_job_running_.store(true);
     }
+    std::thread([this, cmd, generation]() {
+      const std::string full = cmd + " >/tmp/go2_audio_play_bridge.log 2>&1";
+      std::system(full.c_str());
+      if (playback_generation_.load() == generation) {
+        playback_job_running_.store(false);
+      }
+    }).detach();
     return true;
   }
 
@@ -2489,6 +2502,9 @@ class AudioPlaybackBridgeManager {
   std::string python_path_{"/home/unitree/workspace/go2_webrtc_connect"};
   std::string script_path_{"/home/unitree/openclaw/go2_grpc/scripts/go2_grpc/audio_play_webrtc_sidecar.py"};
   std::string go2_host_ip_;
+  std::atomic<bool> playback_job_running_{false};
+  std::mutex playback_launch_mu_;
+  std::atomic<uint64_t> playback_generation_{0};
 };
 
 class UdpDiscoveryBroadcaster {
