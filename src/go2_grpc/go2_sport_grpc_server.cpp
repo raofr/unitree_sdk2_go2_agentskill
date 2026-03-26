@@ -3410,7 +3410,10 @@ class Go2SportServiceImpl final : public Go2SportService::Service {
     float best_w_ratio = 0.0f;
     float best_h_ratio = 0.0f;
     for (const auto& d : detections) {
-      const std::string label = ToLowerCopy(d.label());
+      std::string label = d.label();
+      for (char& c : label) {
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+      }
       if (d.class_id() != 0 && label != "person") {
         continue;
       }

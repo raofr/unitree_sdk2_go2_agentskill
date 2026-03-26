@@ -85,8 +85,8 @@ class YoloGreetingAutoplay:
         self.heartbeat_interval_sec = _env_float("GO2_AUTOPLAY_HEARTBEAT_INTERVAL_SEC", 20.0)
         self.detect_interval_sec = _env_float("GO2_AUTOPLAY_DETECT_INTERVAL_SEC", 1.0)
         self.cooldown_sec = _env_float("GO2_AUTOPLAY_COOLDOWN_SEC", 10.0)
-        self.person_conf_min = _env_float("GO2_AUTOPLAY_PERSON_CONF_MIN", 0.6)
-        self.person_size_ratio_min = _env_float("GO2_AUTOPLAY_PERSON_SIZE_RATIO_MIN", 0.2)
+        self.person_conf_min = _env_float("GO2_AUTOPLAY_PERSON_CONF_MIN", 0.7)
+        self.person_width_ratio_min = _env_float("GO2_AUTOPLAY_PERSON_WIDTH_RATIO_MIN", 0.15)
         self.model_path = _env_str(
             "GO2_AUTOPLAY_MODEL_PATH",
             "/home/unitree/workspace/unitree_sdk2/models/yolo26/aarch64/yolo26s.engine",
@@ -104,6 +104,7 @@ class YoloGreetingAutoplay:
         self._session_id: Optional[str] = None
         self._last_hb_ts = 0.0
         self._next_trigger_ts = 0.0
+        self._audio_seq = 0
         self._stop = False
 
         files = self._load_greetings()
@@ -151,7 +152,7 @@ class YoloGreetingAutoplay:
             self._last_hb_ts = now
 
     @staticmethod
-    def _has_person(resp, min_conf: float, min_size_ratio: float) -> bool:
+    def _has_person(resp, min_conf: float, min_width_ratio: float) -> bool:
         for d in resp.detections:
             label = (d.label or "").lower()
             if d.class_id != 0 and label != "person":
@@ -159,14 +160,14 @@ class YoloGreetingAutoplay:
             score = float(d.score)
             w_ratio = float(getattr(d, "bbox_w_ratio", 0.0))
             h_ratio = float(getattr(d, "bbox_h_ratio", 0.0))
-            size_ok = (w_ratio >= min_size_ratio) or (h_ratio >= min_size_ratio)
+            width_ok = w_ratio >= min_width_ratio
             print(
                 "[autoplay] person candidate: "
                 f"score={score:.3f}, bbox_w_ratio={w_ratio:.3f}, bbox_h_ratio={h_ratio:.3f}, "
-                f"conf_ok={score >= min_conf}, size_ok={size_ok}",
+                f"conf_ok={score >= min_conf}, width_ok={width_ok}",
                 flush=True,
             )
-            if score >= min_conf and size_ok:
+            if score >= min_conf and width_ok:
                 return True
         return False
 
@@ -179,13 +180,15 @@ class YoloGreetingAutoplay:
 
         session_id = self._session_id
         audio_err: List[str] = []
+        self._audio_seq += 1
+        stream_id = f"{self.audio_stream_id}-{audio_path.stem}-{int(time.time() * 1000)}-{self._audio_seq}"
 
         def _play_audio_task() -> None:
             try:
                 audio_client = self._new_client()
                 audio_resp = audio_client.upload_and_play_audio(
                     session_id=session_id,
-                    stream_id=self.audio_stream_id,
+                    stream_id=stream_id,
                     audio_bytes=payload,
                     config=self.AudioUploadConfig(
                         mime=mime,
@@ -197,7 +200,7 @@ class YoloGreetingAutoplay:
                     ),
                 )
                 print(
-                    f"[autoplay] played: {audio_path.name}, accepted={bool(audio_resp.accepted)}",
+                    f"[autoplay] played: {audio_path.name}, stream_id={stream_id}, accepted={bool(audio_resp.accepted)}",
                     flush=True,
                 )
             except Exception as exc:  # pylint: disable=broad-except
@@ -206,14 +209,73 @@ class YoloGreetingAutoplay:
         # Run audio request and HEART action in parallel.
         audio_thread = threading.Thread(target=_play_audio_task, daemon=True)
         audio_thread.start()
-        self.client.execute_action(session_id=session_id, action=self.ActionName.HEART)
-        self.client.execute_action(session_id=session_id, action=self.ActionName.RECOVERY_STAND)
+        # Temporarily disable action sequence:
+        # self.client.execute_action(session_id=session_id, action=self.ActionName.HEART)
+        # self.client.execute_action(session_id=session_id, action=self.ActionName.RECOVERY_STAND)
+
+        # Turn in place toward the detected person (yaw only, no x/y motion).
+        try:
+            det = self.client.detect_once(
+                session_id=session_id,
+                config=self.DetectionConfig(
+                    model_path=self.model_path,
+                    conf_thres=self.conf_thres,
+                    iou_thres=self.iou_thres,
+                    max_det=self.max_det,
+                ),
+            )
+            best = None
+            best_score = -1.0
+            for d in det.detections:
+                label = (d.label or "").lower()
+                if d.class_id != 0 and label != "person":
+                    continue
+                score = float(d.score)
+                if score > best_score:
+                    best = d
+                    best_score = score
+
+            if best is not None:
+                w = float(best.bbox.w)
+                x = float(best.bbox.x)
+                w_ratio = float(getattr(best, "bbox_w_ratio", 0.0))
+                if w > 1e-6 and w_ratio > 1e-6:
+                    img_w = w / w_ratio
+                    if img_w > 1e-6:
+                        person_cx = x + 0.5 * w
+                        center_err = (person_cx - 0.5 * img_w) / (0.5 * img_w)
+                        if abs(center_err) >= 0.08:
+                            # Invert sign so robot turns toward person.
+                            # Apply distance-aware gain by bbox width ratio:
+                            # around w_ratio=0.25 -> yaw gain is reduced to about half.
+                            size_scale = min(1.0, 0.125 / max(w_ratio, 1e-6))
+                            vyaw_cmd = -center_err * 3.2 * size_scale
+                            vyaw = max(-3.2, min(3.2, vyaw_cmd))
+                            if 0.0 < abs(vyaw) < 0.35:
+                                vyaw = 0.35 if vyaw > 0.0 else -0.35
+                            self.client.execute_action(
+                                session_id=session_id,
+                                action=self.ActionName.MOVE,
+                                vx=0.0,
+                                vy=0.0,
+                                vyaw=vyaw,
+                            )
+                            time.sleep(0.45)
+                            self.client.execute_action(session_id=session_id, action=self.ActionName.STOP_MOVE)
+                            print(
+                                f"[autoplay] turn-to-person: center_err={center_err:.3f}, "
+                                f"bbox_w_ratio={w_ratio:.3f}, size_scale={size_scale:.3f}, vyaw={vyaw:.3f}",
+                                flush=True,
+                            )
+        except Exception as exc:  # pylint: disable=broad-except
+            print(f"[autoplay] turn-to-person skipped: {exc}", flush=True)
+
         audio_thread.join(timeout=max(0.0, self.timeout_sec))
         if audio_err:
             raise RuntimeError(f"audio playback failed: {audio_err[0]}")
         if audio_thread.is_alive():
             print("[autoplay] audio request still in flight after action sequence", flush=True)
-        print("[autoplay] action sequence: HEART -> RECOVERY_STAND", flush=True)
+        print("[autoplay] action sequence disabled; audio+turn executed", flush=True)
 
     def run(self) -> None:
         print("[autoplay] started", flush=True)
@@ -232,7 +294,7 @@ class YoloGreetingAutoplay:
                 )
                 now = time.time()
                 if now >= self._next_trigger_ts and self._has_person(
-                    det, self.person_conf_min, self.person_size_ratio_min
+                    det, self.person_conf_min, self.person_width_ratio_min
                 ):
                     self._play_and_act()
                     self._next_trigger_ts = time.time() + self.cooldown_sec
