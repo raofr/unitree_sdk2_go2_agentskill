@@ -19,6 +19,7 @@
 #include <set>
 #include <shared_mutex>
 #include <sstream>
+#include <iomanip>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -641,6 +642,8 @@ class YoloTrtEngine {
       d.mutable_bbox()->set_y(oy1);
       d.mutable_bbox()->set_w(w);
       d.mutable_bbox()->set_h(h);
+      d.set_bbox_w_ratio(src_w > 0 ? (w / static_cast<float>(src_w)) : 0.0f);
+      d.set_bbox_h_ratio(src_h > 0 ? (h / static_cast<float>(src_h)) : 0.0f);
       dets.push_back(std::move(d));
       if (dets.size() >= cfg.max_det) {
         break;
@@ -2669,6 +2672,13 @@ class Go2SportServiceImpl final : public Go2SportService::Service {
         std::cerr << "detection debug frame dump enabled: " << detect_debug_dir_ << std::endl;
       }
     }
+    const char* debug_score_min = std::getenv("GO2_DETECT_DEBUG_SCORE_MIN");
+    if (debug_score_min != nullptr && std::strlen(debug_score_min) > 0) {
+      try {
+        detect_debug_score_min_ = std::stof(debug_score_min);
+      } catch (...) {
+      }
+    }
     const char* timing_log_path = std::getenv("GO2_DETECT_TIMING_LOG");
     if (timing_log_path != nullptr && std::strlen(timing_log_path) > 0) {
       detect_timing_log_.open(timing_log_path, std::ios::app);
@@ -2888,8 +2898,8 @@ class Go2SportServiceImpl final : public Go2SportService::Service {
     cfg.conf_thres = req->conf_thres() > 0.0f ? req->conf_thres() : 0.25f;
     cfg.iou_thres = req->iou_thres() > 0.0f ? req->iou_thres() : 0.45f;
     cfg.max_det = req->max_det() > 0 ? req->max_det() : 100U;
-    MaybeDumpDetectionInput("detect_once", image_sample);
     const auto dets = engine_.Infer(image_sample, cfg);
+    MaybeDumpDetectionInput("detect_once", image_sample, dets);
 
     resp->set_code(0);
     resp->set_message("ok");
@@ -3353,14 +3363,13 @@ class Go2SportServiceImpl final : public Go2SportService::Service {
         continue;
       }
       auto fetch_end = std::chrono::steady_clock::now();
-      MaybeDumpDetectionInput(stream->stream_id, image_sample);
-
       std::string err;
       if (!engine_.EnsureLoaded(stream->model_path, &err)) {
         continue;
       }
       auto infer_start = std::chrono::steady_clock::now();
       const auto detections = engine_.Infer(image_sample, stream->cfg);
+      MaybeDumpDetectionInput(stream->stream_id, image_sample, detections);
       auto infer_end = std::chrono::steady_clock::now();
       const uint64_t frame_id = next_frame_id_.fetch_add(1);
       PublishDetectionEvent(stream, detections, frame_id);
@@ -3392,14 +3401,48 @@ class Go2SportServiceImpl final : public Go2SportService::Service {
     }
   }
 
-  void MaybeDumpDetectionInput(const std::string& stream_tag, const std::vector<uint8_t>& image_sample) {
+  void MaybeDumpDetectionInput(const std::string& stream_tag, const std::vector<uint8_t>& image_sample,
+                               const std::vector<Detection>& detections) {
     if (detect_debug_dir_.empty() || image_sample.empty()) {
+      return;
+    }
+    float best_score = -1.0f;
+    float best_w_ratio = 0.0f;
+    float best_h_ratio = 0.0f;
+    for (const auto& d : detections) {
+      const std::string label = ToLowerCopy(d.label());
+      if (d.class_id() != 0 && label != "person") {
+        continue;
+      }
+      if (d.score() < detect_debug_score_min_) {
+        continue;
+      }
+      if (d.score() > best_score) {
+        best_score = d.score();
+        best_w_ratio = d.bbox_w_ratio();
+        best_h_ratio = d.bbox_h_ratio();
+      }
+    }
+    if (best_score < 0.0f) {
       return;
     }
     std::lock_guard<std::mutex> lock(detect_debug_mu_);
     uint64_t seq = ++detect_debug_seq_[stream_tag];
-    const std::string name = detect_debug_dir_ + "/" + SanitizeForFileName(stream_tag) + "_" +
-                             std::to_string(NowUnixMs()) + "_" + std::to_string(seq) + ".jpg";
+    std::ostringstream wr_ss;
+    wr_ss << std::fixed << std::setprecision(3) << best_w_ratio;
+    std::string wr = wr_ss.str();
+    std::replace(wr.begin(), wr.end(), '.', 'p');
+    std::ostringstream hr_ss;
+    hr_ss << std::fixed << std::setprecision(3) << best_h_ratio;
+    std::string hr = hr_ss.str();
+    std::replace(hr.begin(), hr.end(), '.', 'p');
+    std::ostringstream conf_ss;
+    conf_ss << std::fixed << std::setprecision(3) << best_score;
+    std::string conf = conf_ss.str();
+    std::replace(conf.begin(), conf.end(), '.', 'p');
+    const std::string name =
+        detect_debug_dir_ + "/" + SanitizeForFileName(stream_tag) + "_" + std::to_string(NowUnixMs()) + "_" +
+        std::to_string(seq) + "_sc" + conf + "_wr" + wr + "_hr" + hr + ".jpg";
     std::ofstream ofs(name, std::ios::binary);
     if (!ofs) {
       return;
@@ -3455,6 +3498,7 @@ class Go2SportServiceImpl final : public Go2SportService::Service {
   std::mutex streams_mu_;
   std::unordered_map<std::string, std::shared_ptr<DetectionStreamState>> detection_streams_;
   std::string detect_debug_dir_;
+  float detect_debug_score_min_{0.45f};
   std::mutex detect_debug_mu_;
   std::unordered_map<std::string, uint64_t> detect_debug_seq_;
   std::ofstream detect_timing_log_;

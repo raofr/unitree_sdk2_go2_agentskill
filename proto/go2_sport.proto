@@ -162,6 +162,8 @@ message Detection {
   string label = 2;
   float score = 3;
   BoundingBox bbox = 4;
+  float bbox_w_ratio = 5;
+  float bbox_h_ratio = 6;
 }
 
 message DetectObjectsRequest {

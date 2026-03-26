@@ -5,6 +5,7 @@ import os
 import random
 import signal
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import List, Optional
@@ -73,10 +74,10 @@ class YoloGreetingAutoplay:
         self.ActionName = ActionName
         self.AudioUploadConfig = AudioUploadConfig
         self.DetectionConfig = DetectionConfig
-        self.client = Go2SportClient(
-            endpoint=_env_str("GO2_AUTOPLAY_ENDPOINT", "127.0.0.1:50051"),
-            timeout_sec=_env_float("GO2_AUTOPLAY_TIMEOUT_SEC", 20.0),
-        )
+        self.Go2SportClient = Go2SportClient
+        self.endpoint = _env_str("GO2_AUTOPLAY_ENDPOINT", "127.0.0.1:50051")
+        self.timeout_sec = _env_float("GO2_AUTOPLAY_TIMEOUT_SEC", 20.0)
+        self.client = self._new_client()
 
         self.owner = _env_str("GO2_AUTOPLAY_OWNER", "go2_yolo_autoplay")
         self.session_name = _env_str("GO2_AUTOPLAY_SESSION_NAME", "yolo_greeting_autoplay")
@@ -84,7 +85,8 @@ class YoloGreetingAutoplay:
         self.heartbeat_interval_sec = _env_float("GO2_AUTOPLAY_HEARTBEAT_INTERVAL_SEC", 20.0)
         self.detect_interval_sec = _env_float("GO2_AUTOPLAY_DETECT_INTERVAL_SEC", 1.0)
         self.cooldown_sec = _env_float("GO2_AUTOPLAY_COOLDOWN_SEC", 10.0)
-        self.person_conf_min = _env_float("GO2_AUTOPLAY_PERSON_CONF_MIN", 0.45)
+        self.person_conf_min = _env_float("GO2_AUTOPLAY_PERSON_CONF_MIN", 0.6)
+        self.person_size_ratio_min = _env_float("GO2_AUTOPLAY_PERSON_SIZE_RATIO_MIN", 0.2)
         self.model_path = _env_str(
             "GO2_AUTOPLAY_MODEL_PATH",
             "/home/unitree/workspace/unitree_sdk2/models/yolo26/aarch64/yolo26s.engine",
@@ -108,6 +110,9 @@ class YoloGreetingAutoplay:
         if not files:
             raise RuntimeError(f"no audio files in {self.greetings_dir}")
         self._greetings = ShuffleCycle(files)
+
+    def _new_client(self):
+        return self.Go2SportClient(endpoint=self.endpoint, timeout_sec=self.timeout_sec)
 
     def _load_greetings(self) -> List[Path]:
         exts = {".wav", ".mp3"}
@@ -146,10 +151,22 @@ class YoloGreetingAutoplay:
             self._last_hb_ts = now
 
     @staticmethod
-    def _has_person(resp, min_conf: float) -> bool:
+    def _has_person(resp, min_conf: float, min_size_ratio: float) -> bool:
         for d in resp.detections:
             label = (d.label or "").lower()
-            if (d.class_id == 0 or label == "person") and float(d.score) >= min_conf:
+            if d.class_id != 0 and label != "person":
+                continue
+            score = float(d.score)
+            w_ratio = float(getattr(d, "bbox_w_ratio", 0.0))
+            h_ratio = float(getattr(d, "bbox_h_ratio", 0.0))
+            size_ok = (w_ratio >= min_size_ratio) or (h_ratio >= min_size_ratio)
+            print(
+                "[autoplay] person candidate: "
+                f"score={score:.3f}, bbox_w_ratio={w_ratio:.3f}, bbox_h_ratio={h_ratio:.3f}, "
+                f"conf_ok={score >= min_conf}, size_ok={size_ok}",
+                flush=True,
+            )
+            if score >= min_conf and size_ok:
                 return True
         return False
 
@@ -160,22 +177,42 @@ class YoloGreetingAutoplay:
         with audio_path.open("rb") as f:
             payload = f.read()
 
-        audio_resp = self.client.upload_and_play_audio(
-            session_id=self._session_id,
-            stream_id=self.audio_stream_id,
-            audio_bytes=payload,
-            config=self.AudioUploadConfig(
-                mime=mime,
-                sample_rate=self.audio_sample_rate,
-                channels=self.audio_channels,
-                volume=self.audio_volume,
-                loop=False,
-                request_id="",
-            ),
-        )
-        print(f"[autoplay] played: {audio_path.name}, accepted={bool(audio_resp.accepted)}", flush=True)
-        self.client.execute_action(session_id=self._session_id, action=self.ActionName.HEART)
-        self.client.execute_action(session_id=self._session_id, action=self.ActionName.RECOVERY_STAND)
+        session_id = self._session_id
+        audio_err: List[str] = []
+
+        def _play_audio_task() -> None:
+            try:
+                audio_client = self._new_client()
+                audio_resp = audio_client.upload_and_play_audio(
+                    session_id=session_id,
+                    stream_id=self.audio_stream_id,
+                    audio_bytes=payload,
+                    config=self.AudioUploadConfig(
+                        mime=mime,
+                        sample_rate=self.audio_sample_rate,
+                        channels=self.audio_channels,
+                        volume=self.audio_volume,
+                        loop=False,
+                        request_id="",
+                    ),
+                )
+                print(
+                    f"[autoplay] played: {audio_path.name}, accepted={bool(audio_resp.accepted)}",
+                    flush=True,
+                )
+            except Exception as exc:  # pylint: disable=broad-except
+                audio_err.append(str(exc))
+
+        # Run audio request and HEART action in parallel.
+        audio_thread = threading.Thread(target=_play_audio_task, daemon=True)
+        audio_thread.start()
+        self.client.execute_action(session_id=session_id, action=self.ActionName.HEART)
+        self.client.execute_action(session_id=session_id, action=self.ActionName.RECOVERY_STAND)
+        audio_thread.join(timeout=max(0.0, self.timeout_sec))
+        if audio_err:
+            raise RuntimeError(f"audio playback failed: {audio_err[0]}")
+        if audio_thread.is_alive():
+            print("[autoplay] audio request still in flight after action sequence", flush=True)
         print("[autoplay] action sequence: HEART -> RECOVERY_STAND", flush=True)
 
     def run(self) -> None:
@@ -194,7 +231,9 @@ class YoloGreetingAutoplay:
                     ),
                 )
                 now = time.time()
-                if now >= self._next_trigger_ts and self._has_person(det, self.person_conf_min):
+                if now >= self._next_trigger_ts and self._has_person(
+                    det, self.person_conf_min, self.person_size_ratio_min
+                ):
                     self._play_and_act()
                     self._next_trigger_ts = time.time() + self.cooldown_sec
                 time.sleep(self.detect_interval_sec)

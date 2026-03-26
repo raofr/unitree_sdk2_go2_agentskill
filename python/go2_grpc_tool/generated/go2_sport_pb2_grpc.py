@@ -64,6 +64,56 @@ class Go2SportServiceStub(object):
                 request_serializer=go2__sport__pb2.GetServerStatusRequest.SerializeToString,
                 response_deserializer=go2__sport__pb2.GetServerStatusResponse.FromString,
                 _registered_method=True)
+        self.DetectObjects = channel.unary_unary(
+                '/go2.sport.v1.Go2SportService/DetectObjects',
+                request_serializer=go2__sport__pb2.DetectObjectsRequest.SerializeToString,
+                response_deserializer=go2__sport__pb2.DetectObjectsResponse.FromString,
+                _registered_method=True)
+        self.StartDetection = channel.unary_unary(
+                '/go2.sport.v1.Go2SportService/StartDetection',
+                request_serializer=go2__sport__pb2.StartDetectionRequest.SerializeToString,
+                response_deserializer=go2__sport__pb2.StartDetectionResponse.FromString,
+                _registered_method=True)
+        self.StopDetection = channel.unary_unary(
+                '/go2.sport.v1.Go2SportService/StopDetection',
+                request_serializer=go2__sport__pb2.StopDetectionRequest.SerializeToString,
+                response_deserializer=go2__sport__pb2.StopDetectionResponse.FromString,
+                _registered_method=True)
+        self.SubscribeDetections = channel.unary_stream(
+                '/go2.sport.v1.Go2SportService/SubscribeDetections',
+                request_serializer=go2__sport__pb2.SubscribeDetectionsRequest.SerializeToString,
+                response_deserializer=go2__sport__pb2.DetectionEvent.FromString,
+                _registered_method=True)
+        self.UploadAndPlayAudio = channel.unary_unary(
+                '/go2.sport.v1.Go2SportService/UploadAndPlayAudio',
+                request_serializer=go2__sport__pb2.UploadAndPlayAudioRequest.SerializeToString,
+                response_deserializer=go2__sport__pb2.UploadAndPlayAudioResponse.FromString,
+                _registered_method=True)
+        self.GetAudioStatus = channel.unary_unary(
+                '/go2.sport.v1.Go2SportService/GetAudioStatus',
+                request_serializer=go2__sport__pb2.GetAudioStatusRequest.SerializeToString,
+                response_deserializer=go2__sport__pb2.GetAudioStatusResponse.FromString,
+                _registered_method=True)
+        self.StopAudioPlayback = channel.unary_unary(
+                '/go2.sport.v1.Go2SportService/StopAudioPlayback',
+                request_serializer=go2__sport__pb2.StopAudioPlaybackRequest.SerializeToString,
+                response_deserializer=go2__sport__pb2.StopAudioPlaybackResponse.FromString,
+                _registered_method=True)
+        self.StartMicrophone = channel.unary_unary(
+                '/go2.sport.v1.Go2SportService/StartMicrophone',
+                request_serializer=go2__sport__pb2.StartMicrophoneRequest.SerializeToString,
+                response_deserializer=go2__sport__pb2.StartMicrophoneResponse.FromString,
+                _registered_method=True)
+        self.StopMicrophone = channel.unary_unary(
+                '/go2.sport.v1.Go2SportService/StopMicrophone',
+                request_serializer=go2__sport__pb2.StopMicrophoneRequest.SerializeToString,
+                response_deserializer=go2__sport__pb2.StopMicrophoneResponse.FromString,
+                _registered_method=True)
+        self.SubscribeMicrophone = channel.stream_stream(
+                '/go2.sport.v1.Go2SportService/SubscribeMicrophone',
+                request_serializer=go2__sport__pb2.MicrophoneControl.SerializeToString,
+                response_deserializer=go2__sport__pb2.MicrophoneAudio.FromString,
+                _registered_method=True)
 
 
 class Go2SportServiceServicer(object):
@@ -105,6 +155,66 @@ class Go2SportServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def DetectObjects(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def StartDetection(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def StopDetection(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def SubscribeDetections(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def UploadAndPlayAudio(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetAudioStatus(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def StopAudioPlayback(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def StartMicrophone(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def StopMicrophone(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def SubscribeMicrophone(self, request_iterator, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_Go2SportServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -137,6 +247,56 @@ def add_Go2SportServiceServicer_to_server(servicer, server):
                     servicer.GetServerStatus,
                     request_deserializer=go2__sport__pb2.GetServerStatusRequest.FromString,
                     response_serializer=go2__sport__pb2.GetServerStatusResponse.SerializeToString,
+            ),
+            'DetectObjects': grpc.unary_unary_rpc_method_handler(
+                    servicer.DetectObjects,
+                    request_deserializer=go2__sport__pb2.DetectObjectsRequest.FromString,
+                    response_serializer=go2__sport__pb2.DetectObjectsResponse.SerializeToString,
+            ),
+            'StartDetection': grpc.unary_unary_rpc_method_handler(
+                    servicer.StartDetection,
+                    request_deserializer=go2__sport__pb2.StartDetectionRequest.FromString,
+                    response_serializer=go2__sport__pb2.StartDetectionResponse.SerializeToString,
+            ),
+            'StopDetection': grpc.unary_unary_rpc_method_handler(
+                    servicer.StopDetection,
+                    request_deserializer=go2__sport__pb2.StopDetectionRequest.FromString,
+                    response_serializer=go2__sport__pb2.StopDetectionResponse.SerializeToString,
+            ),
+            'SubscribeDetections': grpc.unary_stream_rpc_method_handler(
+                    servicer.SubscribeDetections,
+                    request_deserializer=go2__sport__pb2.SubscribeDetectionsRequest.FromString,
+                    response_serializer=go2__sport__pb2.DetectionEvent.SerializeToString,
+            ),
+            'UploadAndPlayAudio': grpc.unary_unary_rpc_method_handler(
+                    servicer.UploadAndPlayAudio,
+                    request_deserializer=go2__sport__pb2.UploadAndPlayAudioRequest.FromString,
+                    response_serializer=go2__sport__pb2.UploadAndPlayAudioResponse.SerializeToString,
+            ),
+            'GetAudioStatus': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetAudioStatus,
+                    request_deserializer=go2__sport__pb2.GetAudioStatusRequest.FromString,
+                    response_serializer=go2__sport__pb2.GetAudioStatusResponse.SerializeToString,
+            ),
+            'StopAudioPlayback': grpc.unary_unary_rpc_method_handler(
+                    servicer.StopAudioPlayback,
+                    request_deserializer=go2__sport__pb2.StopAudioPlaybackRequest.FromString,
+                    response_serializer=go2__sport__pb2.StopAudioPlaybackResponse.SerializeToString,
+            ),
+            'StartMicrophone': grpc.unary_unary_rpc_method_handler(
+                    servicer.StartMicrophone,
+                    request_deserializer=go2__sport__pb2.StartMicrophoneRequest.FromString,
+                    response_serializer=go2__sport__pb2.StartMicrophoneResponse.SerializeToString,
+            ),
+            'StopMicrophone': grpc.unary_unary_rpc_method_handler(
+                    servicer.StopMicrophone,
+                    request_deserializer=go2__sport__pb2.StopMicrophoneRequest.FromString,
+                    response_serializer=go2__sport__pb2.StopMicrophoneResponse.SerializeToString,
+            ),
+            'SubscribeMicrophone': grpc.stream_stream_rpc_method_handler(
+                    servicer.SubscribeMicrophone,
+                    request_deserializer=go2__sport__pb2.MicrophoneControl.FromString,
+                    response_serializer=go2__sport__pb2.MicrophoneAudio.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -301,6 +461,276 @@ class Go2SportService(object):
             '/go2.sport.v1.Go2SportService/GetServerStatus',
             go2__sport__pb2.GetServerStatusRequest.SerializeToString,
             go2__sport__pb2.GetServerStatusResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def DetectObjects(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/go2.sport.v1.Go2SportService/DetectObjects',
+            go2__sport__pb2.DetectObjectsRequest.SerializeToString,
+            go2__sport__pb2.DetectObjectsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def StartDetection(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/go2.sport.v1.Go2SportService/StartDetection',
+            go2__sport__pb2.StartDetectionRequest.SerializeToString,
+            go2__sport__pb2.StartDetectionResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def StopDetection(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/go2.sport.v1.Go2SportService/StopDetection',
+            go2__sport__pb2.StopDetectionRequest.SerializeToString,
+            go2__sport__pb2.StopDetectionResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SubscribeDetections(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_stream(
+            request,
+            target,
+            '/go2.sport.v1.Go2SportService/SubscribeDetections',
+            go2__sport__pb2.SubscribeDetectionsRequest.SerializeToString,
+            go2__sport__pb2.DetectionEvent.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def UploadAndPlayAudio(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/go2.sport.v1.Go2SportService/UploadAndPlayAudio',
+            go2__sport__pb2.UploadAndPlayAudioRequest.SerializeToString,
+            go2__sport__pb2.UploadAndPlayAudioResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetAudioStatus(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/go2.sport.v1.Go2SportService/GetAudioStatus',
+            go2__sport__pb2.GetAudioStatusRequest.SerializeToString,
+            go2__sport__pb2.GetAudioStatusResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def StopAudioPlayback(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/go2.sport.v1.Go2SportService/StopAudioPlayback',
+            go2__sport__pb2.StopAudioPlaybackRequest.SerializeToString,
+            go2__sport__pb2.StopAudioPlaybackResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def StartMicrophone(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/go2.sport.v1.Go2SportService/StartMicrophone',
+            go2__sport__pb2.StartMicrophoneRequest.SerializeToString,
+            go2__sport__pb2.StartMicrophoneResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def StopMicrophone(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/go2.sport.v1.Go2SportService/StopMicrophone',
+            go2__sport__pb2.StopMicrophoneRequest.SerializeToString,
+            go2__sport__pb2.StopMicrophoneResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SubscribeMicrophone(request_iterator,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.stream_stream(
+            request_iterator,
+            target,
+            '/go2.sport.v1.Go2SportService/SubscribeMicrophone',
+            go2__sport__pb2.MicrophoneControl.SerializeToString,
+            go2__sport__pb2.MicrophoneAudio.FromString,
             options,
             channel_credentials,
             insecure,
