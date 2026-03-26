@@ -1,0 +1,20 @@
+[Unit]
+Description=Go2 YOLO Greeting Autoplay Worker
+After=network-online.target go2_sport_grpc.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=unitree
+WorkingDirectory=/home/unitree/openclaw/go2_grpc
+EnvironmentFile=/home/unitree/openclaw/go2_grpc/run/go2_yolo_greeting_autoplay.env
+Environment=PYTHONNOUSERSITE=1
+Environment=PYTHONPATH=/home/unitree/openclaw/go2_grpc/go2_agent_tool
+ExecStart=/home/unitree/openclaw/go2_grpc/.venv_yolo_autoplay/bin/python /home/unitree/openclaw/go2_grpc/scripts/go2_grpc/yolo_greeting_autoplay_client.py
+StandardOutput=append:/home/unitree/openclaw/go2_grpc/run/go2_yolo_greeting_autoplay.log
+StandardError=append:/home/unitree/openclaw/go2_grpc/run/go2_yolo_greeting_autoplay.log
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
